@@ -1,18 +1,44 @@
 import { BoundingBox } from '../shape/bounding-box.js';
+import { BoundingSphere } from '../shape/bounding-sphere.js';
 
 import {
     BLEND_NONE, BLEND_NORMAL,
     LAYER_WORLD,
-    MASK_DYNAMIC,
+    MASK_DYNAMIC, MASK_LIGHTMAP, MASK_BAKED,
     RENDERSTYLE_SOLID,
     SHADER_FORWARD, SHADER_FORWARDHDR,
     SHADERDEF_UV0, SHADERDEF_UV1, SHADERDEF_VCOLOR, SHADERDEF_TANGENTS, SHADERDEF_NOSHADOW, SHADERDEF_SKIN,
-    SHADERDEF_SCREENSPACE, SHADERDEF_MORPH_POSITION, SHADERDEF_MORPH_NORMAL, SHADERDEF_MORPH_TEXTURE_BASED,
+    SHADERDEF_SCREENSPACE, SHADERDEF_MORPH_POSITION, SHADERDEF_MORPH_NORMAL, SHADERDEF_MORPH_TEXTURE_BASED, SHADERDEF_LM,
     SORTKEY_FORWARD
 } from './constants.js';
 
 var _tmpAabb = new BoundingBox();
 var _tempBoneAabb = new BoundingBox();
+var _tempSphere = new BoundingSphere();
+
+// internal data structure used to store data used by hardware instancing
+class InstancingData {
+    constructor(numObjects) {
+        this.count = numObjects;
+        this.vertexBuffer = null;
+    }
+}
+
+class Command {
+    constructor(layer, blendType, command) {
+        this._key = [];
+        this._key[SORTKEY_FORWARD] = getKey(layer, blendType, true, 0);
+        this.command = command;
+    }
+
+    get key() {
+        return this._key[SORTKEY_FORWARD];
+    }
+
+    set key(val) {
+        this._key[SORTKEY_FORWARD] = val;
+    }
+}
 
 /**
  * @class
@@ -23,10 +49,7 @@ var _tempBoneAabb = new BoundingBox();
  * @param {pc.GraphNode} node - The graph node defining the transform for this instance.
  * @param {pc.Mesh} mesh - The graphics mesh being instanced.
  * @param {pc.Material} material - The material used to render this instance.
- * @property {pc.BoundingBox} aabb The world space axis-aligned bounding box for this
- * mesh instance.
- * @property {boolean} castShadow Controls whether the mesh instance casts shadows.
- * Defaults to false.
+ * @property {pc.BoundingBox} aabb The world space axis-aligned bounding box for this mesh instance.
  * @property {boolean} visible Enable rendering for this mesh instance. Use visible property to enable/disable rendering without overhead of removing from scene.
  * But note that the mesh instance is still in the hierarchy and still in the draw call list.
  * @property {pc.GraphNode} node The graph node defining the transform for this instance.
@@ -64,79 +87,91 @@ var _tempBoneAabb = new BoundingBox();
  *     };
  * };
  */
-function MeshInstance(node, mesh, material) {
-    this._key = [0, 0];
-    this._shader = [null, null, null];
+class MeshInstance {
+    constructor(node, mesh, material) {
+        this._key = [0, 0];
+        this._shader = [null, null, null];
 
-    this.isStatic = false;
-    this._staticLightList = null;
-    this._staticSource = null;
+        this.isStatic = false;
+        this._staticLightList = null;
+        this._staticSource = null;
 
-    this.node = node;           // The node that defines the transform of the mesh instance
-    this._mesh = mesh;           // The mesh that this instance renders
-    mesh.incReference();
-    this.material = material;   // The material with which to render this instance
+        this.node = node;           // The node that defines the transform of the mesh instance
+        this._mesh = mesh;          // The mesh that this instance renders
+        mesh.incRefCount();
+        this.material = material;   // The material with which to render this instance
 
-    this._shaderDefs = MASK_DYNAMIC << 16; // 2 byte toggles, 2 bytes light mask; Default value is no toggles and mask = pc.MASK_DYNAMIC
-    this._shaderDefs |= mesh.vertexBuffer.format.hasUv0 ? SHADERDEF_UV0 : 0;
-    this._shaderDefs |= mesh.vertexBuffer.format.hasUv1 ? SHADERDEF_UV1 : 0;
-    this._shaderDefs |= mesh.vertexBuffer.format.hasColor ? SHADERDEF_VCOLOR : 0;
-    this._shaderDefs |= mesh.vertexBuffer.format.hasTangents ? SHADERDEF_TANGENTS : 0;
+        this._shaderDefs = MASK_DYNAMIC << 16; // 2 byte toggles, 2 bytes light mask; Default value is no toggles and mask = pc.MASK_DYNAMIC
+        this._shaderDefs |= mesh.vertexBuffer.format.hasUv0 ? SHADERDEF_UV0 : 0;
+        this._shaderDefs |= mesh.vertexBuffer.format.hasUv1 ? SHADERDEF_UV1 : 0;
+        this._shaderDefs |= mesh.vertexBuffer.format.hasColor ? SHADERDEF_VCOLOR : 0;
+        this._shaderDefs |= mesh.vertexBuffer.format.hasTangents ? SHADERDEF_TANGENTS : 0;
 
-    this._lightHash = 0;
+        this._lightHash = 0;
 
-    // Render options
-    this.visible = true;
-    this.layer = LAYER_WORLD; // legacy
-    this.renderStyle = RENDERSTYLE_SOLID;
-    this.castShadow = false;
-    this._receiveShadow = true;
-    this._screenSpace = false;
-    this._noDepthDrawGl1 = false;
-    this.cull = true;
-    this.pick = true;
-    this._updateAabb = true;
-    this._updateAabbFunc = null;
-    this._calculateSortDistance = null;
+        // Render options
+        this.visible = true;
+        this.layer = LAYER_WORLD; // legacy
+        this.renderStyle = RENDERSTYLE_SOLID;
+        this.castShadow = false;
+        this._receiveShadow = true;
+        this._screenSpace = false;
+        this._noDepthDrawGl1 = false;
+        this.cull = true;
 
-    // 64-bit integer key that defines render order of this mesh instance
-    this.updateKey();
+        // true if the meshInstance is pickable by Picker (by rendering ID to render target)
+        this.pick = true;
 
-    this._skinInstance = null;
-    this._morphInstance = null;
-    this.instancingData = null;
+        this._updateAabb = true;
+        this._updateAabbFunc = null;
+        this._calculateSortDistance = null;
 
-    // World space AABB
-    this.aabb = new BoundingBox();
-    this._aabbVer = -1;
+        // 64-bit integer key that defines render order of this mesh instance
+        this.updateKey();
 
-    this.drawOrder = 0;
-    this.visibleThisFrame = 0;
+        this._skinInstance = null;
+        this._morphInstance = null;
+        this.instancingData = null;
 
-    // custom function used to customize culling (e.g. for 2D UI elements)
-    this.isVisibleFunc = null;
+        // World space AABB
+        this.aabb = new BoundingBox();
+        this._aabbVer = -1;
 
-    this.parameters = {};
+        this.drawOrder = 0;
+        this.visibleThisFrame = 0;
 
-    this.stencilFront = null;
-    this.stencilBack = null;
-    // Negative scale batching support
-    this.flipFaces = false;
-}
+        // custom function used to customize culling (e.g. for 2D UI elements)
+        this.isVisibleFunc = null;
 
-Object.defineProperty(MeshInstance.prototype, 'mesh', {
-    get: function () {
-        return this._mesh;
-    },
-    set: function (mesh) {
-        if (this._mesh) this._mesh.decReference();
-        this._mesh = mesh;
-        if (mesh) mesh.incReference();
+        this.parameters = {};
+
+        this.stencilFront = null;
+        this.stencilBack = null;
+        // Negative scale batching support
+        this.flipFaces = false;
     }
-});
 
-Object.defineProperty(MeshInstance.prototype, 'aabb', {
-    get: function () {
+    get mesh() {
+        return this._mesh;
+    }
+
+    set mesh(mesh) {
+
+        if (mesh === this._mesh)
+            return;
+
+        if (this._mesh) {
+            this._mesh.decRefCount();
+        }
+
+        this._mesh = mesh;
+
+        if (mesh) {
+            mesh.incRefCount();
+        }
+    }
+
+    get aabb() {
         var i;
 
         if (!this._updateAabb) {
@@ -201,17 +236,17 @@ Object.defineProperty(MeshInstance.prototype, 'aabb', {
             this._aabbVer = this.node._aabbVer;
         }
         return this._aabb;
-    },
-    set: function (aabb) {
+    }
+
+    set aabb(aabb) {
         this._aabb = aabb;
     }
-});
 
-Object.defineProperty(MeshInstance.prototype, 'material', {
-    get: function () {
+    get material() {
         return this._material;
-    },
-    set: function (material) {
+    }
+
+    set material(material) {
         var i;
         for (i = 0; i < this._shader.length; i++) {
             this._shader[i] = null;
@@ -249,57 +284,54 @@ Object.defineProperty(MeshInstance.prototype, 'material', {
             }
         }
     }
-});
 
-Object.defineProperty(MeshInstance.prototype, 'layer', {
-    get: function () {
+    get layer() {
         return this._layer;
-    },
-    set: function (layer) {
+    }
+
+    set layer(layer) {
         this._layer = layer;
         this.updateKey();
     }
-});
 
-Object.defineProperty(MeshInstance.prototype, 'calculateSortDistance', {
-    get: function () {
+    get calculateSortDistance() {
         return this._calculateSortDistance;
-    },
-    set: function (calculateSortDistance) {
+    }
+
+    set calculateSortDistance(calculateSortDistance) {
         this._calculateSortDistance = calculateSortDistance;
     }
-});
 
-Object.defineProperty(MeshInstance.prototype, 'receiveShadow', {
-    get: function () {
+    get receiveShadow() {
         return this._receiveShadow;
-    },
-    set: function (val) {
+    }
+
+    set receiveShadow(val) {
         this._receiveShadow = val;
         this._shaderDefs = val ? (this._shaderDefs & ~SHADERDEF_NOSHADOW) : (this._shaderDefs | SHADERDEF_NOSHADOW);
         this._shader[SHADER_FORWARD] = null;
         this._shader[SHADER_FORWARDHDR] = null;
     }
-});
 
-Object.defineProperty(MeshInstance.prototype, 'skinInstance', {
-    get: function () {
+    get skinInstance() {
         return this._skinInstance;
-    },
-    set: function (val) {
+    }
+
+    set skinInstance(val) {
         this._skinInstance = val;
         this._shaderDefs = val ? (this._shaderDefs | SHADERDEF_SKIN) : (this._shaderDefs & ~SHADERDEF_SKIN);
         for (var i = 0; i < this._shader.length; i++) {
             this._shader[i] = null;
         }
-    }
-});
 
-Object.defineProperty(MeshInstance.prototype, 'morphInstance', {
-    get: function () {
+        this._setupSkinUpdate();
+    }
+
+    get morphInstance() {
         return this._morphInstance;
-    },
-    set: function (val) {
+    }
+
+    set morphInstance(val) {
         this._morphInstance = val;
         if (this._morphInstance) {
             this._morphInstance.meshInstance = this;
@@ -312,72 +344,120 @@ Object.defineProperty(MeshInstance.prototype, 'morphInstance', {
             this._shader[i] = null;
         }
     }
-});
 
-Object.defineProperty(MeshInstance.prototype, 'screenSpace', {
-    get: function () {
+    get screenSpace() {
         return this._screenSpace;
-    },
-    set: function (val) {
+    }
+
+    set screenSpace(val) {
         this._screenSpace = val;
         this._shaderDefs = val ? (this._shaderDefs | SHADERDEF_SCREENSPACE) : (this._shaderDefs & ~SHADERDEF_SCREENSPACE);
         this._shader[SHADER_FORWARD] = null;
     }
-});
 
-Object.defineProperty(MeshInstance.prototype, 'key', {
-    get: function () {
+    get key() {
         return this._key[SORTKEY_FORWARD];
-    },
-    set: function (val) {
+    }
+
+    set key(val) {
         this._key[SORTKEY_FORWARD] = val;
     }
-});
 
-/**
- * @name pc.MeshInstance#mask
- * @type {number}
- * @description Mask controlling which {@link pc.LightComponent}s light this mesh instance, which {@link pc.CameraComponent} sees it and in which {@link pc.Layer} it is rendered.
- * Defaults to 1.
- */
-Object.defineProperty(MeshInstance.prototype, 'mask', {
-    get: function () {
+    /**
+     * @name pc.MeshInstance#mask
+     * @type {number}
+     * @description Mask controlling which {@link pc.LightComponent}s light this mesh instance, which {@link pc.CameraComponent} sees it and in which {@link pc.Layer} it is rendered.
+     * Defaults to 1.
+     */
+    get mask() {
         return this._shaderDefs >> 16;
-    },
-    set: function (val) {
+    }
+
+    set mask(val) {
         var toggles = this._shaderDefs & 0x0000FFFF;
         this._shaderDefs = toggles | (val << 16);
         this._shader[SHADER_FORWARD] = null;
         this._shader[SHADER_FORWARDHDR] = null;
     }
-});
 
-/**
- * @name pc.MeshInstance#instancingCount
- * @type {number}
- * @description Number of instances when using hardware instancing to render the mesh.
- */
-Object.defineProperty(MeshInstance.prototype, 'instancingCount', {
-    get: function () {
+    /**
+     * @name pc.MeshInstance#instancingCount
+     * @type {number}
+     * @description Number of instances when using hardware instancing to render the mesh.
+     */
+    get instancingCount() {
         return this.instancingData ? this.instancingData.count : 0;
-    },
-    set: function (value) {
+    }
+
+    set instancingCount(value) {
         if (this.instancingData)
             this.instancingData.count = value;
     }
-});
 
-Object.assign(MeshInstance.prototype, {
-    syncAabb: function () {
+    destroy() {
+
+        let mesh = this.mesh;
+        if (mesh) {
+
+            // this decreases ref count on the mesh
+            this.mesh = null;
+
+            // destroy mesh
+            if (mesh.getRefCount() < 1) {
+                mesh.destroy();
+            }
+        }
+
+        if (this._skinInstance) {
+            this._skinInstance.destroy();
+            this._skinInstance = null;
+        }
+
+        if (this.morphInstance) {
+            this.morphInstance.destroy();
+            this.morphInstance = null;
+        }
+
+        // make sure material clears references to this meshInstance
+        this.material = null;
+    }
+
+    syncAabb() {
         // Deprecated
-    },
+    }
 
-    updateKey: function () {
+    // test if meshInstance is visible by camera. It requires the frustum of the camera to be up to date, which forward-renderer
+    // takes care of. This function should  not be called elsewhere.
+    _isVisible(camera) {
+
+        if (this.visible) {
+
+            // custom visibility method of MeshInstance
+            if (this.isVisibleFunc) {
+                return this.isVisibleFunc(camera);
+            }
+
+            var pos = this.aabb.center;
+            if (this._aabb._radiusVer !== this._aabbVer) {
+                this._aabb._radius = this._aabb.halfExtents.length();
+                this._aabb._radiusVer = this._aabbVer;
+            }
+
+            _tempSphere.radius = this._aabb._radius;
+            _tempSphere.center = pos;
+
+            return camera.frustum.containsSphere(_tempSphere);
+        }
+
+        return false;
+    }
+
+    updateKey() {
         var material = this.material;
         this._key[SORTKEY_FORWARD] = getKey(this.layer,
                                             (material.alphaToCoverage || material.alphaTest) ? BLEND_NORMAL : material.blendType, // render alphatest/atoc after opaque
                                             false, material.id);
-    },
+    }
 
     /**
      * @function
@@ -386,7 +466,7 @@ Object.assign(MeshInstance.prototype, {
      * @param {pc.VertexBuffer|null} vertexBuffer - Vertex buffer to hold per-instance vertex data (usually world matrices).
      * Pass null to turn off hardware instancing.
      */
-    setInstancing: function (vertexBuffer) {
+    setInstancing(vertexBuffer) {
         if (vertexBuffer) {
             this.instancingData = new InstancingData(vertexBuffer.numVertices);
             this.instancingData.vertexBuffer = vertexBuffer;
@@ -400,23 +480,40 @@ Object.assign(MeshInstance.prototype, {
             this.instancingData = null;
             this.cull = true;
         }
-    },
+    }
 
     // Parameter management
-    clearParameters: function () {
+    clearParameters() {
         this.parameters = {};
-    },
+    }
 
-    getParameters: function () {
+    getParameters() {
         return this.parameters;
-    },
+    }
 
-    getParameter: function (name) {
+    /**
+     * @function
+     * @name pc.MeshInstance#getParameter
+     * @description Retrieves the specified shader parameter from a mesh instance.
+     * @param {string} name - The name of the parameter to query.
+     * @returns {object} The named parameter.
+     */
+    getParameter(name) {
         return this.parameters[name];
-    },
+    }
 
-    setParameter: function (name, data, passFlags) {
-        if (passFlags === undefined) passFlags = -524285; // All bits set except 2 - 18 range
+    /**
+     * @function
+     * @name pc.MeshInstance#setParameter
+     * @description Sets a shader parameter on a mesh instance. Note that this parameter will take precedence over parameter of the same name
+     * if set on Material this mesh instance uses for rendering.
+     * @param {string} name - The name of the parameter to set.
+     * @param {number|number[]|pc.Texture} data - The value for the specified parameter.
+     * @param {number} [passFlags] - Mask describing which passes the material should be included in.
+     */
+    setParameter(name, data, passFlags = -524285) {
+
+        // note on -524285: All bits set except 2 - 18 range
 
         if (data === undefined && typeof name === 'object') {
             var uniformObject = name;
@@ -441,42 +538,61 @@ Object.assign(MeshInstance.prototype, {
                 passFlags: passFlags
             };
         }
-    },
+    }
 
-    deleteParameter: function (name) {
+     /**
+      * @function
+      * @name pc.MeshInstance#deleteParameter
+      * @description Deletes a shader parameter on a mesh instance.
+      * @param {string} name - The name of the parameter to delete.
+      */
+    deleteParameter(name) {
         if (this.parameters[name]) {
             delete this.parameters[name];
         }
-    },
+    }
 
-    setParameters: function () {
-        // Push each shader parameter into scope
-        for (var paramName in this.parameters) {
-            var parameter = this.parameters[paramName];
-            parameter.scopeId.setValue(parameter.data);
+    // used to apply parameters from this mesh instance into scope of uniforms, called internally by forward-renderer
+    setParameters(device, passFlag) {
+        var parameter, parameters = this.parameters;
+        for (var paramName in parameters) {
+            parameter = parameters[paramName];
+            if (parameter.passFlags & passFlag) {
+                if (!parameter.scopeId) {
+                    parameter.scopeId = device.scope.resolve(paramName);
+                }
+                parameter.scopeId.setValue(parameter.data);
+            }
         }
     }
-});
 
-function Command(layer, blendType, command) {
-    this._key = [];
-    this._key[SORTKEY_FORWARD] = getKey(layer, blendType, true, 0);
-    this.command = command;
-}
-
-Object.defineProperty(Command.prototype, 'key', {
-    get: function () {
-        return this._key[SORTKEY_FORWARD];
-    },
-    set: function (val) {
-        this._key[SORTKEY_FORWARD] = val;
+    setLightmapped(value) {
+        if (value) {
+            this.mask = (this.mask | MASK_BAKED) & ~(MASK_DYNAMIC | MASK_LIGHTMAP);
+        } else {
+            this.deleteParameter("texture_lightMap");
+            this.deleteParameter("texture_dirLightMap");
+            this._shaderDefs &= ~SHADERDEF_LM;
+            this.mask = (this.mask | MASK_DYNAMIC) & ~(MASK_BAKED | MASK_LIGHTMAP);
+        }
     }
-});
 
-// internal data structure used to store data used by hardware instancing
-function InstancingData(numObjects) {
-    this.count = numObjects;
-    this.vertexBuffer = null;
+    setOverrideAabb(aabb) {
+        this._updateAabb = !aabb;
+        if (aabb) {
+            this.aabb.copy(aabb);
+        }
+
+        this._setupSkinUpdate();
+    }
+
+    _setupSkinUpdate() {
+
+        // set if bones need to be updated before culling
+        if (this._skinInstance) {
+            this._skinInstance._updateBeforeCull = this._updateAabb;
+        }
+    }
 }
 
 function getKey(layer, blendType, isCommand, materialId) {
@@ -486,7 +602,7 @@ function getKey(layer, blendType, isCommand, materialId) {
     // 27 - 30 : layer
     // 26      : translucency type (opaque/transparent)
     // 25      : Command bit (1: this key is for a command, 0: it's a mesh instance)
-    // 0 - 24  : Material ID (if oqaque) or 0 (if transparent - will be depth)
+    // 0 - 24  : Material ID (if opaque) or 0 (if transparent - will be depth)
     return ((layer & 0x0f) << 27) |
            ((blendType === BLEND_NONE ? 1 : 0) << 26) |
            ((isCommand ? 1 : 0) << 25) |

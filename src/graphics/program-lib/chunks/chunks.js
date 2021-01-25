@@ -17,6 +17,9 @@ import baseNineSlicedVS from './baseNineSliced.vert';
 import baseNineSlicedTiledPS from './baseNineSlicedTiled.frag';
 import biasConstPS from './biasConst.frag';
 import blurVSMPS from './blurVSM.frag';
+import clearCoatPS from './clearCoat.frag';
+import clearCoatGlossPS from './clearCoatGloss.frag';
+import clearCoatNormalPS from './clearCoatNormal.frag';
 import combineClearCoatPS from './combineClearCoat.frag';
 import combineDiffusePS from './combineDiffuse.frag';
 import combineDiffuseSpecularPS from './combineDiffuseSpecular.frag';
@@ -27,6 +30,7 @@ import combineDiffuseSpecularOldPS from './combineDiffuseSpecularOld.frag';
 import cookiePS from './cookie.frag';
 import cubeMapProjectBoxPS from './cubeMapProjectBox.frag';
 import cubeMapProjectNonePS from './cubeMapProjectNone.frag';
+import cubeMapRotatePS from './cubeMapRotate.frag';
 import detailModesPS from './detailModes.frag';
 import diffusePS from './diffuse.frag';
 import diffuseDetailMapPS from './diffuseDetailMap.frag';
@@ -64,6 +68,7 @@ import lightmapSingleVertPS from './lightmapSingleVert.frag';
 import lightSpecularAnisoGGXPS from './lightSpecularAnisoGGX.frag';
 import lightSpecularBlinnPS from './lightSpecularBlinn.frag';
 import lightSpecularPhongPS from './lightSpecularPhong.frag';
+import ltc from './ltc.frag';
 import metalnessPS from './metalness.frag';
 import msdfPS from './msdf.frag';
 import normalVS from './normal.vert';
@@ -216,6 +221,9 @@ var shaderChunks = {
     baseNineSlicedTiledPS: baseNineSlicedTiledPS,
     biasConstPS: biasConstPS,
     blurVSMPS: blurVSMPS,
+    clearCoatPS: clearCoatPS,
+    clearCoatGlossPS: clearCoatGlossPS,
+    clearCoatNormalPS: clearCoatNormalPS,
     combineClearCoatPS: combineClearCoatPS,
     combineDiffusePS: combineDiffusePS,
     combineDiffuseSpecularPS: combineDiffuseSpecularPS,
@@ -226,6 +234,7 @@ var shaderChunks = {
     cookiePS: cookiePS,
     cubeMapProjectBoxPS: cubeMapProjectBoxPS,
     cubeMapProjectNonePS: cubeMapProjectNonePS,
+    cubeMapRotatePS: cubeMapRotatePS,
     detailModesPS: detailModesPS,
     diffusePS: diffusePS,
     diffuseDetailMapPS: diffuseDetailMapPS,
@@ -263,6 +272,7 @@ var shaderChunks = {
     lightSpecularAnisoGGXPS: lightSpecularAnisoGGXPS,
     lightSpecularBlinnPS: lightSpecularBlinnPS,
     lightSpecularPhongPS: lightSpecularPhongPS,
+    ltc: ltc,
     metalnessPS: metalnessPS,
     msdfPS: msdfPS,
     normalVS: normalVS,

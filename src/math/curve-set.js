@@ -9,36 +9,51 @@ import { CurveEvaluator } from './curve-evaluator.js';
  * @description Creates a new curve set.
  * @param {Array<number[]>} [curveKeys] - An array of arrays of keys (pairs of numbers with
  * the time first and value second).
+ * @example
+ * var curveSet = new pc.CurveSet([
+ *     [
+ *         [0, 0],
+ *         [0.33, 2],
+ *         [0.66, 2.6],
+ *         [1, 3]
+ *     ],
+ *     [
+ *         [0, 34],
+ *         [0.33, 35],
+ *         [0.66, 36],
+ *         [1, 37]
+ *     ]
+ * ]);
  */
-function CurveSet() {
-    var i;
+class CurveSet {
+    constructor() {
+        var i;
 
-    this.curves = [];
-    this._type = CURVE_SMOOTHSTEP;
+        this.curves = [];
+        this._type = CURVE_SMOOTHSTEP;
 
-    if (arguments.length > 1) {
-        for (i = 0; i < arguments.length; i++) {
-            this.curves.push(new Curve(arguments[i]));
-        }
-    } else {
-        if (arguments.length === 0) {
-            this.curves.push(new Curve());
+        if (arguments.length > 1) {
+            for (i = 0; i < arguments.length; i++) {
+                this.curves.push(new Curve(arguments[i]));
+            }
         } else {
-            var arg = arguments[0];
-            if (typeof arg === 'number') {
-                for (i = 0; i < arg; i++) {
-                    this.curves.push(new Curve());
-                }
+            if (arguments.length === 0) {
+                this.curves.push(new Curve());
             } else {
-                for (i = 0; i < arg.length; i++) {
-                    this.curves.push(new Curve(arg[i]));
+                var arg = arguments[0];
+                if (typeof arg === 'number') {
+                    for (i = 0; i < arg; i++) {
+                        this.curves.push(new Curve());
+                    }
+                } else {
+                    for (i = 0; i < arg.length; i++) {
+                        this.curves.push(new Curve(arg[i]));
+                    }
                 }
             }
         }
     }
-}
 
-Object.assign(CurveSet.prototype, {
     /**
      * @function
      * @name pc.CurveSet#get
@@ -46,9 +61,9 @@ Object.assign(CurveSet.prototype, {
      * @param {number} index - The index of the curve to return.
      * @returns {pc.Curve} The curve at the specified index.
      */
-    get: function (index) {
+    get(index) {
         return this.curves[index];
-    },
+    }
 
     /**
      * @function
@@ -61,9 +76,8 @@ Object.assign(CurveSet.prototype, {
      * to return the result.
      * @returns {number[]} The interpolated curve values at the specified time.
      */
-    value: function (time, result) {
+    value(time, result = []) {
         var length = this.curves.length;
-        result = result || [];
         result.length = length;
 
         for (var i = 0; i < length; i++) {
@@ -71,7 +85,7 @@ Object.assign(CurveSet.prototype, {
         }
 
         return result;
-    },
+    }
 
     /**
      * @function
@@ -79,7 +93,7 @@ Object.assign(CurveSet.prototype, {
      * @description Returns a clone of the specified curve set object.
      * @returns {pc.CurveSet} A clone of the specified curve set.
      */
-    clone: function () {
+    clone() {
         var result = new CurveSet();
 
         result.curves = [];
@@ -90,9 +104,9 @@ Object.assign(CurveSet.prototype, {
         result._type = this._type;
 
         return result;
-    },
+    }
 
-    quantize: function (precision) {
+    quantize(precision) {
         precision = Math.max(precision, 2);
 
         var numCurves = this.curves.length;
@@ -107,7 +121,7 @@ Object.assign(CurveSet.prototype, {
         }
 
         return values;
-    },
+    }
 
     /**
      * @private
@@ -120,50 +134,46 @@ Object.assign(CurveSet.prototype, {
      * @param {number} max - The maximum output value.
      * @returns {number[]} The set of quantized values.
      */
-    quantizeClamped: function (precision, min, max) {
+    quantizeClamped(precision, min, max) {
         var result = this.quantize(precision);
         for (var i = 0; i < result.length; ++i) {
             result[i] = Math.min(max, Math.max(min, result[i]));
         }
         return result;
     }
-});
 
-/**
- * @readonly
- * @name pc.CurveSet#length
- * @type {number}
- * @description The number of curves in the curve set.
- */
-Object.defineProperty(CurveSet.prototype, 'length', {
-    get: function () {
+    /**
+     * @readonly
+     * @name pc.CurveSet#length
+     * @type {number}
+     * @description The number of curves in the curve set.
+     */
+    get length() {
         return this.curves.length;
     }
-});
 
-/**
- * @name pc.CurveSet#type
- * @type {number}
- * @description The interpolation scheme applied to all curves in the curve set. Can be:
- *
- * * {@link pc.CURVE_LINEAR}
- * * {@link pc.CURVE_SMOOTHSTEP}
- * * {@link pc.CURVE_SPLINE}
- * * {@link pc.CURVE_STEP}
- *
- * Defaults to {@link pc.CURVE_SMOOTHSTEP}.
- */
-Object.defineProperty(CurveSet.prototype, 'type', {
-    get: function () {
+    /**
+     * @name pc.CurveSet#type
+     * @type {number}
+     * @description The interpolation scheme applied to all curves in the curve set. Can be:
+     *
+     * * {@link pc.CURVE_LINEAR}
+     * * {@link pc.CURVE_SMOOTHSTEP}
+     * * {@link pc.CURVE_SPLINE}
+     * * {@link pc.CURVE_STEP}
+     *
+     * Defaults to {@link pc.CURVE_SMOOTHSTEP}.
+     */
+    get type() {
         return this._type;
-    },
+    }
 
-    set: function (value) {
+    set type(value) {
         this._type = value;
         for (var i = 0; i < this.curves.length; i++) {
             this.curves[i].type = value;
         }
     }
-});
+}
 
 export { CurveSet };
