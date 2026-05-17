@@ -1,21 +1,41 @@
 /**
- * @constant
- * @type {string}
- * @name pc.ELEMENTTYPE_GROUP
- * @description A {@link pc.ElementComponent} that contains child {@link pc.ElementComponent}s.
+ * A {@link ElementComponent} that contains child {@link ElementComponent}s.
+ *
+ * @category User Interface
  */
 export const ELEMENTTYPE_GROUP = 'group';
+
 /**
- * @constant
- * @type {string}
- * @name pc.ELEMENTTYPE_IMAGE
- * @description A {@link pc.ElementComponent} that displays an image.
+ * A {@link ElementComponent} that displays an image.
+ *
+ * @category User Interface
  */
 export const ELEMENTTYPE_IMAGE = 'image';
+
 /**
- * @constant
- * @type {string}
- * @name pc.ELEMENTTYPE_TEXT
- * @description A {@link pc.ElementComponent} that displays text.
+ * A {@link ElementComponent} that displays text.
+ *
+ * @category User Interface
  */
 export const ELEMENTTYPE_TEXT = 'text';
+
+/**
+ * Fit the content exactly to Element's bounding box.
+ *
+ * @category User Interface
+ */
+export const FITMODE_STRETCH = 'stretch';
+
+/**
+ * Fit the content within the Element's bounding box while preserving its Aspect Ratio.
+ *
+ * @category User Interface
+ */
+export const FITMODE_CONTAIN = 'contain';
+
+/**
+ * Fit the content to cover the entire Element's bounding box while preserving its Aspect Ratio.
+ *
+ * @category User Interface
+ */
+export const FITMODE_COVER = 'cover';

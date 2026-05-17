@@ -1,8 +1,21 @@
 *.DS_Store
-/build
-/docs
-node_modules/
+.cursor
 .idea/
+.vscode/
+.turbo
+build
+tree*.*.html
+coverage
+docs
+examples/dist
+examples/node_modules
+node_modules
 npm-debug.log
-.java-version
-release.py
+types
+stats.html
+.npmrc
+examples/.npmrc
+.prettierrc
+# Added by Snap Cursor Rules extension
+.cursor/rules/cursor-rules-debug.log
+.cursor/rules/remote

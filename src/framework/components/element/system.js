@@ -1,33 +1,33 @@
-import { Color } from '../../../core/color.js';
-
-import { Vec2 } from '../../../math/vec2.js';
-import { Vec4 } from '../../../math/vec4.js';
-
-import {
-    PIXELFORMAT_R8_G8_B8_A8
-} from '../../../graphics/constants.js';
-import { Texture } from '../../../graphics/texture.js';
-
+import { Color } from '../../../core/math/color.js';
+import { Vec2 } from '../../../core/math/vec2.js';
+import { Vec4 } from '../../../core/math/vec4.js';
+import { PIXELFORMAT_SRGBA8 } from '../../../platform/graphics/constants.js';
+import { Texture } from '../../../platform/graphics/texture.js';
 import { BLEND_PREMULTIPLIED, SPRITE_RENDERMODE_SLICED, SPRITE_RENDERMODE_TILED } from '../../../scene/constants.js';
 import { StandardMaterial } from '../../../scene/materials/standard-material.js';
-
-import { Component } from '../component.js';
 import { ComponentSystem } from '../system.js';
-
 import { ELEMENTTYPE_IMAGE, ELEMENTTYPE_TEXT } from './constants.js';
 import { ElementComponent } from './component.js';
 import { ElementComponentData } from './data.js';
 
+/**
+ * @import { AppBase } from '../../app-base.js'
+ */
+
 const _schema = ['enabled'];
 
 /**
- * @class
- * @name pc.ElementComponentSystem
- * @augments pc.ComponentSystem
- * @classdesc Manages creation of {@link pc.ElementComponent}s.
- * @param {pc.Application} app - The application.
+ * Manages creation of {@link ElementComponent}s.
+ *
+ * @category User Interface
  */
 class ElementComponentSystem extends ComponentSystem {
+    /**
+     * Create a new ElementComponentSystem instance.
+     *
+     * @param {AppBase} app - The application.
+     * @ignore
+     */
     constructor(app) {
         super(app);
 
@@ -41,10 +41,14 @@ class ElementComponentSystem extends ComponentSystem {
         this._rtlReorder = null;
 
         // default texture - make white so we can tint it with emissive color
-        this._defaultTexture = new Texture(app.graphicsDevice, { width: 1, height: 1, format: PIXELFORMAT_R8_G8_B8_A8 });
-        this._defaultTexture.name = 'element-system';
-        var pixels = this._defaultTexture.lock();
-        var pixelData = new Uint8Array(4);
+        this._defaultTexture = new Texture(app.graphicsDevice, {
+            width: 1,
+            height: 1,
+            format: PIXELFORMAT_SRGBA8,
+            name: 'element-system'
+        });
+        const pixels = this._defaultTexture.lock();
+        const pixelData = new Uint8Array(4);
         pixelData[0] = 255.0;
         pixelData[1] = 255.0;
         pixelData[2] = 255.0;
@@ -67,17 +71,17 @@ class ElementComponentSystem extends ComponentSystem {
         this.defaultScreenSpaceImageMaskMaterial = null;
 
         // text element materials created on demand by getTextElementMaterial()
-        this.defaultTextMaterial = null;
-        this.defaultBitmapTextMaterial = null;
-        this.defaultScreenSpaceTextMaterial = null;
-        this.defaultScreenSpaceBitmapTextMaterial = null;
+        this._defaultTextMaterials = {};
 
         this.defaultImageMaterials = [];
 
+        this.on('add', this.onAddComponent, this);
         this.on('beforeremove', this.onRemoveComponent, this);
     }
 
     destroy() {
+        super.destroy();
+
         this._defaultTexture.destroy();
     }
 
@@ -100,10 +104,10 @@ class ElementComponentSystem extends ComponentSystem {
             }
         }
 
-        var splitHorAnchors = Math.abs(component.anchor.x - component.anchor.z) > 0.001;
-        var splitVerAnchors = Math.abs(component.anchor.y - component.anchor.w) > 0.001;
-        var _marginChange = false;
-        var color;
+        const splitHorAnchors = Math.abs(component.anchor.x - component.anchor.z) > 0.001;
+        const splitVerAnchors = Math.abs(component.anchor.y - component.anchor.w) > 0.001;
+        let _marginChange = false;
+        let color;
 
         if (data.margin !== undefined) {
             if (data.margin instanceof Vec4) {
@@ -136,7 +140,7 @@ class ElementComponentSystem extends ComponentSystem {
             component.margin = component._margin;
         }
 
-        var shouldForceSetAnchor = false;
+        let shouldForceSetAnchor = false;
 
         if (data.width !== undefined && !splitHorAnchors) {
             // force update
@@ -166,6 +170,10 @@ class ElementComponentSystem extends ComponentSystem {
             component.useInput = data.useInput;
         }
 
+        if (data.fitMode !== undefined) {
+            component.fitMode = data.fitMode;
+        }
+
         component.batchGroupId = data.batchGroupId === undefined || data.batchGroupId === null ? -1 : data.batchGroupId;
 
         if (data.layers && Array.isArray(data.layers)) {
@@ -182,7 +190,7 @@ class ElementComponentSystem extends ComponentSystem {
             }
             if (data.color !== undefined) {
                 color = data.color;
-                if (! (color instanceof Color)) {
+                if (!(color instanceof Color)) {
                     color = new Color(data.color[0], data.color[1], data.color[2]);
                 }
                 component.color = color;
@@ -213,7 +221,7 @@ class ElementComponentSystem extends ComponentSystem {
             }
             if (data.color !== undefined) {
                 color = data.color;
-                if (! (color instanceof Color)) {
+                if (!(color instanceof Color)) {
                     color = new Color(color[0], color[1], color[2]);
                 }
                 component.color = color;
@@ -246,7 +254,7 @@ class ElementComponentSystem extends ComponentSystem {
 
         // find screen
         // do this here not in constructor so that component is added to the entity
-        var result = component._parseUpToScreen();
+        const result = component._parseUpToScreen();
         if (result.screen) {
             component._updateScreen(result.screen);
         }
@@ -260,14 +268,18 @@ class ElementComponentSystem extends ComponentSystem {
         }
     }
 
+    onAddComponent(entity, component) {
+        entity.fire('element:add');
+    }
+
     onRemoveComponent(entity, component) {
         component.onRemove();
     }
 
     cloneComponent(entity, clone) {
-        var source = entity.element;
+        const source = entity.element;
 
-        var data = {
+        const data = {
             enabled: source.enabled,
             width: source.width,
             height: source.height,
@@ -304,6 +316,7 @@ class ElementComponentSystem extends ComponentSystem {
             fontAsset: source.fontAsset,
             font: source.font,
             useInput: source.useInput,
+            fitMode: source.fitMode,
             batchGroupId: source.batchGroupId,
             mask: source.mask,
             outlineColor: source.outlineColor && source.outlineColor.clone() || source.outlineColor,
@@ -322,105 +335,70 @@ class ElementComponentSystem extends ComponentSystem {
         return this.addComponent(clone, data);
     }
 
-    getTextElementMaterial(screenSpace, msdf) {
-        if (screenSpace) {
-            if (msdf) {
-                if (!this.defaultScreenSpaceTextMaterial) {
-                    this.defaultScreenSpaceTextMaterial = new StandardMaterial();
-                    this.defaultScreenSpaceTextMaterial.name = "defaultScreenSpaceTextMaterial";
-                    this.defaultScreenSpaceTextMaterial.msdfMap = this._defaultTexture;
-                    this.defaultScreenSpaceTextMaterial.useLighting = false;
-                    this.defaultScreenSpaceTextMaterial.useGammaTonemap = false;
-                    this.defaultScreenSpaceTextMaterial.useFog = false;
-                    this.defaultScreenSpaceTextMaterial.useSkybox = false;
-                    this.defaultScreenSpaceTextMaterial.diffuse.set(0, 0, 0); // black diffuse color to prevent ambient light being included
-                    this.defaultScreenSpaceTextMaterial.emissive.set(1, 1, 1);
-                    this.defaultScreenSpaceTextMaterial.opacity = 0.5;
-                    this.defaultScreenSpaceTextMaterial.blendType = BLEND_PREMULTIPLIED;
-                    this.defaultScreenSpaceTextMaterial.depthWrite = false;
-                    this.defaultScreenSpaceTextMaterial.depthTest = false;
-                    this.defaultScreenSpaceTextMaterial.emissiveVertexColor = true;
-                    this.defaultScreenSpaceTextMaterial.update();
-                }
-                return this.defaultScreenSpaceTextMaterial;
-            }
-            if (!this.defaultScreenSpaceBitmapTextMaterial) {
-                this.defaultScreenSpaceBitmapTextMaterial = new StandardMaterial();
-                this.defaultScreenSpaceBitmapTextMaterial.name = "defaultScreenSpaceBitmapTextMaterial";
-                this.defaultScreenSpaceBitmapTextMaterial.emissive.set(0.5, 0.5, 0.5); // set to non-(1,1,1) so that tint is actually applied
-                this.defaultScreenSpaceBitmapTextMaterial.emissiveMap = this._defaultTexture;
-                this.defaultScreenSpaceBitmapTextMaterial.emissiveTint = true;
-                this.defaultScreenSpaceBitmapTextMaterial.opacity = 0.5;
-                this.defaultScreenSpaceBitmapTextMaterial.opacityMap = this._defaultTexture;
-                this.defaultScreenSpaceBitmapTextMaterial.opacityMapChannel = 'a';
-                this.defaultScreenSpaceBitmapTextMaterial.useLighting = false;
-                this.defaultScreenSpaceBitmapTextMaterial.useGammaTonemap = false;
-                this.defaultScreenSpaceBitmapTextMaterial.useFog = false;
-                this.defaultScreenSpaceBitmapTextMaterial.useSkybox = false;
-                this.defaultScreenSpaceBitmapTextMaterial.diffuse.set(0, 0, 0); // black diffuse color to prevent ambient light being included
-                this.defaultScreenSpaceBitmapTextMaterial.blendType = BLEND_PREMULTIPLIED;
-                this.defaultScreenSpaceBitmapTextMaterial.depthWrite = false;
-                this.defaultScreenSpaceBitmapTextMaterial.depthTest = false;
-                this.defaultScreenSpaceBitmapTextMaterial.emissiveVertexColor = true;
-                this.defaultScreenSpaceBitmapTextMaterial.update();
-            }
-            return this.defaultScreenSpaceBitmapTextMaterial;
+    getTextElementMaterial(screenSpace, msdf, textAttibutes) {
+        const hash = (screenSpace && (1 << 0)) |
+                          (msdf && (1 << 1)) |
+                 (textAttibutes && (1 << 2));
 
+        let material = this._defaultTextMaterials[hash];
+
+        if (material) {
+            return material;
         }
+
+        let name = 'TextMaterial';
+
+        material = new StandardMaterial();
+
         if (msdf) {
-            if (!this.defaultTextMaterial) {
-                this.defaultTextMaterial = new StandardMaterial();
-                this.defaultTextMaterial.name = "defaultTextMaterial";
-                this.defaultTextMaterial.msdfMap = this._defaultTexture;
-                this.defaultTextMaterial.useLighting = false;
-                this.defaultTextMaterial.useGammaTonemap = false;
-                this.defaultTextMaterial.useFog = false;
-                this.defaultTextMaterial.useSkybox = false;
-                this.defaultTextMaterial.diffuse.set(0, 0, 0); // black diffuse color to prevent ambient light being included
-                this.defaultTextMaterial.emissive.set(1, 1, 1);
-                this.defaultTextMaterial.opacity = 0.5;
-                this.defaultTextMaterial.blendType = BLEND_PREMULTIPLIED;
-                this.defaultTextMaterial.depthWrite = false;
-                this.defaultTextMaterial.emissiveVertexColor = true;
-                this.defaultTextMaterial.update();
-            }
-            return this.defaultTextMaterial;
+            material.msdfMap = this._defaultTexture;
+            material.msdfTextAttribute = textAttibutes;
+            material.emissive.set(1, 1, 1);
+        } else {
+            name = `Bitmap${name}`;
+            material.emissive.set(1, 1, 1);
+            material.emissiveMap = this._defaultTexture;
+            material.opacityMap = this._defaultTexture;
+            material.opacityMapChannel = 'a';
         }
-        if (!this.defaultBitmapTextMaterial) {
-            this.defaultBitmapTextMaterial = new StandardMaterial();
-            this.defaultBitmapTextMaterial.name = "defaultBitmapTextMaterial";
-            this.defaultBitmapTextMaterial.emissive.set(0.5, 0.5, 0.5);  // set to non-(1,1,1) so that tint is actually applied
-            this.defaultBitmapTextMaterial.emissiveTint = true;
-            this.defaultBitmapTextMaterial.emissiveMap = this._defaultTexture;
-            this.defaultBitmapTextMaterial.opacity = 0.5;
-            this.defaultBitmapTextMaterial.opacityMap = this._defaultTexture;
-            this.defaultBitmapTextMaterial.opacityMapChannel = 'a';
-            this.defaultBitmapTextMaterial.useLighting = false;
-            this.defaultBitmapTextMaterial.useGammaTonemap = false;
-            this.defaultBitmapTextMaterial.useFog = false;
-            this.defaultBitmapTextMaterial.useSkybox = false;
-            this.defaultBitmapTextMaterial.diffuse.set(0, 0, 0); // black diffuse color to prevent ambient light being included
-            this.defaultBitmapTextMaterial.blendType = BLEND_PREMULTIPLIED;
-            this.defaultBitmapTextMaterial.depthWrite = false;
-            this.defaultBitmapTextMaterial.emissiveVertexColor = true;
-            this.defaultBitmapTextMaterial.update();
+
+        if (screenSpace) {
+            name = `ScreenSpace${name}`;
+            material.depthTest = false;
         }
-        return this.defaultBitmapTextMaterial;
+
+        // The material name can be:
+        //  defaultTextMaterial
+        //  defaultBitmapTextMaterial
+        //  defaultScreenSpaceTextMaterial
+        //  defaultScreenSpaceBitmapTextMaterial
+        material.name = `default${name}`;
+        material.useLighting = false;
+        material.useTonemap = false;
+        material.useFog = false;
+        material.useSkybox = false;
+        material.diffuse.set(0, 0, 0); // black diffuse color to prevent ambient light being included
+        material.opacity = 0.5;
+        material.blendType = BLEND_PREMULTIPLIED;
+        material.depthWrite = false;
+        material.emissiveVertexColor = true;
+        material.update();
+
+        this._defaultTextMaterials[hash] = material;
+
+        return material;
     }
 
     _createBaseImageMaterial() {
-        var material = new StandardMaterial();
+        const material = new StandardMaterial();
 
         material.diffuse.set(0, 0, 0); // black diffuse color to prevent ambient light being included
-        material.emissive.set(0.5, 0.5, 0.5); // use non-white to compile shader correctly
+        material.emissive.set(1, 1, 1);
         material.emissiveMap = this._defaultTexture;
-        material.emissiveTint = true;
         material.opacityMap = this._defaultTexture;
-        material.opacityMapChannel = "a";
-        material.opacityTint = true;
-        material.opacity = 0; // use non-1 opacity to compile shader correctly
+        material.opacityMapChannel = 'a';
         material.useLighting = false;
-        material.useGammaTonemap = false;
+        material.useTonemap = false;
         material.useFog = false;
         material.useSkybox = false;
         material.blendType = BLEND_PREMULTIPLIED;
@@ -436,7 +414,7 @@ class ElementComponentSystem extends ComponentSystem {
                 if (nineSliced) {
                     if (!this.defaultScreenSpaceImageMask9SlicedMaterial) {
                         this.defaultScreenSpaceImageMask9SlicedMaterial = this._createBaseImageMaterial();
-                        this.defaultScreenSpaceImageMask9SlicedMaterial.name = "defaultScreenSpaceImageMask9SlicedMaterial";
+                        this.defaultScreenSpaceImageMask9SlicedMaterial.name = 'defaultScreenSpaceImageMask9SlicedMaterial';
                         this.defaultScreenSpaceImageMask9SlicedMaterial.nineSlicedMode = SPRITE_RENDERMODE_SLICED;
                         this.defaultScreenSpaceImageMask9SlicedMaterial.depthTest = false;
                         this.defaultScreenSpaceImageMask9SlicedMaterial.alphaTest = 1;
@@ -452,7 +430,7 @@ class ElementComponentSystem extends ComponentSystem {
                 } else if (nineSliceTiled) {
                     if (!this.defaultScreenSpaceImageMask9TiledMaterial) {
                         this.defaultScreenSpaceImageMask9TiledMaterial = this.defaultScreenSpaceImage9TiledMaterial.clone();
-                        this.defaultScreenSpaceImageMask9TiledMaterial.name = "defaultScreenSpaceImageMask9TiledMaterial";
+                        this.defaultScreenSpaceImageMask9TiledMaterial.name = 'defaultScreenSpaceImageMask9TiledMaterial';
                         this.defaultScreenSpaceImageMask9TiledMaterial.nineSlicedMode = SPRITE_RENDERMODE_TILED;
                         this.defaultScreenSpaceImageMask9TiledMaterial.depthTest = false;
                         this.defaultScreenSpaceImageMask9TiledMaterial.alphaTest = 1;
@@ -468,7 +446,7 @@ class ElementComponentSystem extends ComponentSystem {
                 } else {
                     if (!this.defaultScreenSpaceImageMaskMaterial) {
                         this.defaultScreenSpaceImageMaskMaterial = this._createBaseImageMaterial();
-                        this.defaultScreenSpaceImageMaskMaterial.name = "defaultScreenSpaceImageMaskMaterial";
+                        this.defaultScreenSpaceImageMaskMaterial.name = 'defaultScreenSpaceImageMaskMaterial';
                         this.defaultScreenSpaceImageMaskMaterial.depthTest = false;
                         this.defaultScreenSpaceImageMaskMaterial.alphaTest = 1;
                         this.defaultScreenSpaceImageMaskMaterial.redWrite = false;
@@ -485,7 +463,7 @@ class ElementComponentSystem extends ComponentSystem {
                 if (nineSliced) {
                     if (!this.defaultScreenSpaceImage9SlicedMaterial) {
                         this.defaultScreenSpaceImage9SlicedMaterial = this._createBaseImageMaterial();
-                        this.defaultScreenSpaceImage9SlicedMaterial.name = "defaultScreenSpaceImage9SlicedMaterial";
+                        this.defaultScreenSpaceImage9SlicedMaterial.name = 'defaultScreenSpaceImage9SlicedMaterial';
                         this.defaultScreenSpaceImage9SlicedMaterial.nineSlicedMode = SPRITE_RENDERMODE_SLICED;
                         this.defaultScreenSpaceImage9SlicedMaterial.depthTest = false;
                         this.defaultScreenSpaceImage9SlicedMaterial.update();
@@ -496,7 +474,7 @@ class ElementComponentSystem extends ComponentSystem {
                 } else if (nineSliceTiled) {
                     if (!this.defaultScreenSpaceImage9TiledMaterial) {
                         this.defaultScreenSpaceImage9TiledMaterial = this._createBaseImageMaterial();
-                        this.defaultScreenSpaceImage9TiledMaterial.name = "defaultScreenSpaceImage9TiledMaterial";
+                        this.defaultScreenSpaceImage9TiledMaterial.name = 'defaultScreenSpaceImage9TiledMaterial';
                         this.defaultScreenSpaceImage9TiledMaterial.nineSlicedMode = SPRITE_RENDERMODE_TILED;
                         this.defaultScreenSpaceImage9TiledMaterial.depthTest = false;
                         this.defaultScreenSpaceImage9TiledMaterial.update();
@@ -508,7 +486,7 @@ class ElementComponentSystem extends ComponentSystem {
                 } else {
                     if (!this.defaultScreenSpaceImageMaterial) {
                         this.defaultScreenSpaceImageMaterial = this._createBaseImageMaterial();
-                        this.defaultScreenSpaceImageMaterial.name = "defaultScreenSpaceImageMaterial";
+                        this.defaultScreenSpaceImageMaterial.name = 'defaultScreenSpaceImageMaterial';
                         this.defaultScreenSpaceImageMaterial.depthTest = false;
                         this.defaultScreenSpaceImageMaterial.update();
 
@@ -522,7 +500,7 @@ class ElementComponentSystem extends ComponentSystem {
                 if (nineSliced) {
                     if (!this.defaultImage9SlicedMaskMaterial) {
                         this.defaultImage9SlicedMaskMaterial = this._createBaseImageMaterial();
-                        this.defaultImage9SlicedMaskMaterial.name = "defaultImage9SlicedMaskMaterial";
+                        this.defaultImage9SlicedMaskMaterial.name = 'defaultImage9SlicedMaskMaterial';
                         this.defaultImage9SlicedMaskMaterial.nineSlicedMode = SPRITE_RENDERMODE_SLICED;
                         this.defaultImage9SlicedMaskMaterial.alphaTest = 1;
                         this.defaultImage9SlicedMaskMaterial.redWrite = false;
@@ -537,7 +515,7 @@ class ElementComponentSystem extends ComponentSystem {
                 } else if (nineSliceTiled) {
                     if (!this.defaultImage9TiledMaskMaterial) {
                         this.defaultImage9TiledMaskMaterial = this._createBaseImageMaterial();
-                        this.defaultImage9TiledMaskMaterial.name = "defaultImage9TiledMaskMaterial";
+                        this.defaultImage9TiledMaskMaterial.name = 'defaultImage9TiledMaskMaterial';
                         this.defaultImage9TiledMaskMaterial.nineSlicedMode = SPRITE_RENDERMODE_TILED;
                         this.defaultImage9TiledMaskMaterial.alphaTest = 1;
                         this.defaultImage9TiledMaskMaterial.redWrite = false;
@@ -552,7 +530,7 @@ class ElementComponentSystem extends ComponentSystem {
                 } else {
                     if (!this.defaultImageMaskMaterial) {
                         this.defaultImageMaskMaterial = this._createBaseImageMaterial();
-                        this.defaultImageMaskMaterial.name = "defaultImageMaskMaterial";
+                        this.defaultImageMaskMaterial.name = 'defaultImageMaskMaterial';
                         this.defaultImageMaskMaterial.alphaTest = 1;
                         this.defaultImageMaskMaterial.redWrite = false;
                         this.defaultImageMaskMaterial.greenWrite = false;
@@ -568,7 +546,7 @@ class ElementComponentSystem extends ComponentSystem {
                 if (nineSliced) {
                     if (!this.defaultImage9SlicedMaterial) {
                         this.defaultImage9SlicedMaterial = this._createBaseImageMaterial();
-                        this.defaultImage9SlicedMaterial.name = "defaultImage9SlicedMaterial";
+                        this.defaultImage9SlicedMaterial.name = 'defaultImage9SlicedMaterial';
                         this.defaultImage9SlicedMaterial.nineSlicedMode = SPRITE_RENDERMODE_SLICED;
                         this.defaultImage9SlicedMaterial.update();
 
@@ -578,7 +556,7 @@ class ElementComponentSystem extends ComponentSystem {
                 } else if (nineSliceTiled) {
                     if (!this.defaultImage9TiledMaterial) {
                         this.defaultImage9TiledMaterial = this._createBaseImageMaterial();
-                        this.defaultImage9TiledMaterial.name = "defaultImage9TiledMaterial";
+                        this.defaultImage9TiledMaterial.name = 'defaultImage9TiledMaterial';
                         this.defaultImage9TiledMaterial.nineSlicedMode = SPRITE_RENDERMODE_TILED;
                         this.defaultImage9TiledMaterial.update();
 
@@ -588,7 +566,7 @@ class ElementComponentSystem extends ComponentSystem {
                 } else {
                     if (!this.defaultImageMaterial) {
                         this.defaultImageMaterial = this._createBaseImageMaterial();
-                        this.defaultImageMaterial.name = "defaultImageMaterial";
+                        this.defaultImageMaterial.name = 'defaultImageMaterial';
                         this.defaultImageMaterial.update();
 
                         this.defaultImageMaterials.push(this.defaultImageMaterial);
@@ -616,7 +594,5 @@ class ElementComponentSystem extends ComponentSystem {
         return this._rtlReorder;
     }
 }
-
-Component._buildAccessors(ElementComponent.prototype, _schema);
 
 export { ElementComponentSystem };

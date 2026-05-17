@@ -1,7 +1,5 @@
 class ScrollbarComponentData {
-    constructor() {
-        this.enabled = true;
-    }
+    enabled = true;
 }
 
 export { ScrollbarComponentData };

@@ -1,11 +1,15 @@
-import { Vec2 } from '../../../math/vec2.js';
-import { Vec4 } from '../../../math/vec4.js';
-
+import { Debug } from '../../../core/debug.js';
+import { Vec2 } from '../../../core/math/vec2.js';
+import { Vec4 } from '../../../core/math/vec4.js';
 import { ORIENTATION_HORIZONTAL } from '../../../scene/constants.js';
-
 import { FITTING_NONE } from './constants.js';
 import { Component } from '../component.js';
 import { LayoutCalculator } from './layout-calculator.js';
+
+/**
+ * @import { Entity } from '../../entity.js'
+ * @import { LayoutGroupComponentSystem } from './system.js'
+ */
 
 function getElement(entity) {
     return entity.element;
@@ -16,93 +20,87 @@ function isEnabledAndHasEnabledElement(entity) {
 }
 
 /**
- * @component
- * @class
- * @name pc.LayoutGroupComponent
- * @augments pc.Component
- * @description Create a new LayoutGroupComponent.
- * @classdesc A LayoutGroupComponent enables the Entity to position and scale child
- * {@link pc.ElementComponent}s according to configurable layout rules.
- * @param {pc.LayoutGroupComponentSystem} system - The ComponentSystem that created
- * this Component.
- * @param {pc.Entity} entity - The Entity that this Component is attached to.
- * @property {number} orientation Whether the layout should run horizontally or
- * vertically. Can be:
+ * The LayoutGroupComponent enables an {@link Entity} to position and scale its child
+ * {@link ElementComponent}s according to configurable layout rules. It supports horizontal and
+ * vertical orientations and a variety of alignment, spacing, wrapping and sizing options.
  *
- * * {@link pc.ORIENTATION_HORIZONTAL}
- * * {@link pc.ORIENTATION_VERTICAL}
+ * You should never need to use the LayoutGroupComponent constructor directly. To add a
+ * LayoutGroupComponent to an {@link Entity}, use {@link Entity#addComponent}:
  *
- * Defaults to pc.ORIENTATION_HORIZONTAL.
- * @property {boolean} reverseX Reverses the order of children along the x axis.
- * Defaults to false.
- * @property {boolean} reverseY Reverses the order of children along the y axis.
- * Defaults to true.
- * @property {pc.Vec2} alignment Specifies the horizontal and vertical alignment of
- * child elements. Values range from 0 to 1 where [0, 0] is the bottom left and
- * [1, 1] is the top right. Defaults to [0, 1].
- * @property {pc.Vec4} padding Padding to be applied inside the container before
- * positioning any children. Specified as left, bottom, right and top values.
- * Defaults to [0, 0, 0, 0] (no padding).
- * @property {pc.Vec2} spacing Spacing to be applied between each child element.
- * Defaults to [0, 0] (no spacing).
- * @property {number} widthFitting Fitting logic to be applied when positioning and
- * scaling child elements. Can be:
+ * ```javascript
+ * const entity = new pc.Entity();
+ * entity.addComponent('element', {
+ *     type: pc.ELEMENTTYPE_GROUP
+ * });
+ * entity.addComponent('layoutgroup', {
+ *     orientation: pc.ORIENTATION_HORIZONTAL,
+ *     spacing: new pc.Vec2(10, 0)
+ * });
+ * ```
  *
- * * {@link pc.FITTING_NONE}: Child elements will be rendered at their natural size.
- * * {@link pc.FITTING_STRETCH}: When the natural size of all child elements does not
- * fill the width of the container, children will be stretched to fit. The rules for how
- * each child will be stretched are outlined below:
- *   1. Sum the {@link pc.LayoutChildComponent#fitWidthProportion} values of each child
- * and normalize so that all values sum to 1.
- *   2. Apply the natural width of each child.
- *   3. If there is space remaining in the container, distribute it to each child based
- * on the normalized {@link pc.LayoutChildComponent#fitWidthProportion} values, but do
- * not exceed the {@link pc.LayoutChildComponent#maxWidth} of each child.
- * * {@link pc.FITTING_SHRINK}: When the natural size of all child elements overflows the
- * width of the container, children will be shrunk to fit. The rules for how each child
- * will be stretched are outlined below:
- *   1. Sum the {@link pc.LayoutChildComponent#fitWidthProportion} values of each child
- * and normalize so that all values sum to 1.
- *   2. Apply the natural width of each child.
- *   3. If the new total width of all children exceeds the available space of the
- * container, reduce each child's width proportionally based on the normalized {@link
- * pc.LayoutChildComponent#fitWidthProportion} values, but do not exceed the {@link
- * pc.LayoutChildComponent#minWidth} of each child.
- * * {@link pc.FITTING_BOTH}: Applies both STRETCH and SHRINK logic as necessary.
+ * Once the LayoutGroupComponent is added to the entity, you can access it via the
+ * {@link Entity#layoutgroup} property:
  *
- * Defaults to pc.FITTING_NONE.
- * @property {number} heightFitting Identical to {@link pc.LayoutGroupComponent#widthFitting}
- * but for the Y axis. Defaults to pc.FITTING_NONE.
- * @property {boolean} wrap Whether or not to wrap children onto a new row/column when the
- * size of the container is exceeded. Defaults to false, which means that children will be
- * be rendered in a single row (horizontal orientation) or column (vertical orientation).
- * Note that setting wrap to true makes it impossible for the {@link pc.FITTING_BOTH}
- * fitting mode to operate in any logical manner. For this reason, when wrap is true, a
- * {@link pc.LayoutGroupComponent#widthFitting} or {@link pc.LayoutGroupComponent#heightFitting}
- * mode of {@link pc.FITTING_BOTH} will be coerced to {@link pc.FITTING_STRETCH}.
+ * ```javascript
+ * entity.layoutgroup.spacing = new pc.Vec2(20, 0); // Increase spacing between children
+ *
+ * console.log(entity.layoutgroup.spacing);         // Get the spacing and print it
+ * ```
+ *
+ * Relevant Engine API examples:
+ *
+ * - [Layout Group](https://playcanvas.github.io/#/user-interface/layout-group)
+ *
+ * @hideconstructor
+ * @category User Interface
  */
 class LayoutGroupComponent extends Component {
+    /** @private */
+    _orientation = ORIENTATION_HORIZONTAL;
+
+    /** @private */
+    _reverseX = false;
+
+    /** @private */
+    _reverseY = true;
+
+    /** @private */
+    _alignment = new Vec2(0, 1);
+
+    /** @private */
+    _padding = new Vec4();
+
+    /** @private */
+    _spacing = new Vec2();
+
+    /** @private */
+    _widthFitting = FITTING_NONE;
+
+    /** @private */
+    _heightFitting = FITTING_NONE;
+
+    /** @private */
+    _wrap = false;
+
+    /** @private */
+    _layoutCalculator = new LayoutCalculator();
+
+    /**
+     * Create a new LayoutGroupComponent instance.
+     *
+     * @param {LayoutGroupComponentSystem} system - The ComponentSystem that created this Component.
+     * @param {Entity} entity - The Entity that this Component is attached to.
+     */
     constructor(system, entity) {
         super(system, entity);
-
-        this._orientation = ORIENTATION_HORIZONTAL;
-        this._reverseX = false;
-        this._reverseY = true;
-        this._alignment = new Vec2(0, 1);
-        this._padding = new Vec4();
-        this._spacing = new Vec2();
-        this._widthFitting = FITTING_NONE;
-        this._heightFitting = FITTING_NONE;
-        this._wrap = false;
-        this._layoutCalculator = new LayoutCalculator();
 
         // Listen for the group container being resized
         this._listenForReflowEvents(this.entity, 'on');
 
         // Listen to existing children being resized
-        this.entity.children.forEach(function (child) {
+        this.entity.children.forEach((child) => {
             this._listenForReflowEvents(child, 'on');
-        }.bind(this));
+        });
 
         // Listen to newly added children being resized
         this.entity.on('childinsert', this._onChildInsert, this);
@@ -111,10 +109,240 @@ class LayoutGroupComponent extends Component {
         // Listen for ElementComponents and LayoutChildComponents being added
         // to self or to children - covers cases where they are not already
         // present at the point when this component is constructed.
+        Debug.assert(system.app.systems.element, 'System \'element\' doesn\'t exist');
         system.app.systems.element.on('add', this._onElementOrLayoutComponentAdd, this);
         system.app.systems.element.on('beforeremove', this._onElementOrLayoutComponentRemove, this);
+
+        Debug.assert(system.app.systems.layoutchild, 'System \'layoutchild\' doesn\'t exist');
         system.app.systems.layoutchild.on('add', this._onElementOrLayoutComponentAdd, this);
         system.app.systems.layoutchild.on('beforeremove', this._onElementOrLayoutComponentRemove, this);
+    }
+
+    /**
+     * Sets whether the layout should run horizontally or vertically. Can be:
+     *
+     * - {@link ORIENTATION_HORIZONTAL}
+     * - {@link ORIENTATION_VERTICAL}
+     *
+     * Defaults to {@link ORIENTATION_HORIZONTAL}.
+     *
+     * @type {number}
+     */
+    set orientation(value) {
+        if (value !== this._orientation) {
+            this._orientation = value;
+            this._scheduleReflow();
+        }
+    }
+
+    /**
+     * Gets whether the layout should run horizontally or vertically.
+     *
+     * @type {number}
+     */
+    get orientation() {
+        return this._orientation;
+    }
+
+    /**
+     * Sets whether to reverse the order of children along the x axis. Defaults to false.
+     *
+     * @type {boolean}
+     */
+    set reverseX(value) {
+        if (value !== this._reverseX) {
+            this._reverseX = value;
+            this._scheduleReflow();
+        }
+    }
+
+    /**
+     * Gets whether to reverse the order of children along the x axis.
+     *
+     * @type {boolean}
+     */
+    get reverseX() {
+        return this._reverseX;
+    }
+
+    /**
+     * Sets whether to reverse the order of children along the y axis. Defaults to true.
+     *
+     * @type {boolean}
+     */
+    set reverseY(value) {
+        if (value !== this._reverseY) {
+            this._reverseY = value;
+            this._scheduleReflow();
+        }
+    }
+
+    /**
+     * Gets whether to reverse the order of children along the y axis.
+     *
+     * @type {boolean}
+     */
+    get reverseY() {
+        return this._reverseY;
+    }
+
+    /**
+     * Sets the horizontal and vertical alignment of child elements. Values range from 0 to 1 where
+     * `[0, 0]` is the bottom left and `[1, 1]` is the top right. Defaults to `[0, 1]`.
+     *
+     * @type {Vec2}
+     */
+    set alignment(value) {
+        if (!value.equals(this._alignment)) {
+            this._alignment.copy(value);
+            this._scheduleReflow();
+        }
+    }
+
+    /**
+     * Gets the horizontal and vertical alignment of child elements.
+     *
+     * @type {Vec2}
+     */
+    get alignment() {
+        return this._alignment;
+    }
+
+    /**
+     * Sets the padding to be applied inside the container before positioning any children.
+     * Specified as left, bottom, right and top values. Defaults to `[0, 0, 0, 0]` (no padding).
+     *
+     * @type {Vec4}
+     */
+    set padding(value) {
+        if (!value.equals(this._padding)) {
+            this._padding.copy(value);
+            this._scheduleReflow();
+        }
+    }
+
+    /**
+     * Gets the padding to be applied inside the container before positioning any children.
+     *
+     * @type {Vec4}
+     */
+    get padding() {
+        return this._padding;
+    }
+
+    /**
+     * Sets the spacing to be applied between each child element. Defaults to `[0, 0]` (no spacing).
+     *
+     * @type {Vec2}
+     */
+    set spacing(value) {
+        if (!value.equals(this._spacing)) {
+            this._spacing.copy(value);
+            this._scheduleReflow();
+        }
+    }
+
+    /**
+     * Gets the spacing to be applied between each child element.
+     *
+     * @type {Vec2}
+     */
+    get spacing() {
+        return this._spacing;
+    }
+
+    /**
+     * Sets the width fitting mode to be applied when positioning and scaling child elements. Can be:
+     *
+     * - {@link FITTING_NONE}: Child elements will be rendered at their natural size.
+     * - {@link FITTING_STRETCH}: When the natural size of all child elements does not fill the width
+     * of the container, children will be stretched to fit. The rules for how each child will be
+     * stretched are outlined below:
+     *   1. Sum the {@link LayoutChildComponent#fitWidthProportion} values of each child and normalize
+     * so that all values sum to 1.
+     *   2. Apply the natural width of each child.
+     *   3. If there is space remaining in the container, distribute it to each child based on the
+     * normalized {@link LayoutChildComponent#fitWidthProportion} values, but do not exceed the
+     * {@link LayoutChildComponent#maxWidth} of each child.
+     * - {@link FITTING_SHRINK}: When the natural size of all child elements overflows the width of the
+     * container, children will be shrunk to fit. The rules for how each child will be stretched are
+     * outlined below:
+     *   1. Sum the {@link LayoutChildComponent#fitWidthProportion} values of each child and normalize
+     * so that all values sum to 1.
+     *   2. Apply the natural width of each child.
+     *   3. If the new total width of all children exceeds the available space of the container, reduce
+     * each child's width proportionally based on the normalized {@link
+     * LayoutChildComponent#fitWidthProportion} values, but do not exceed the {@link
+     * LayoutChildComponent#minWidth} of each child.
+     * - {@link FITTING_BOTH}: Applies both STRETCH and SHRINK logic as necessary.
+     *
+     * Defaults to {@link FITTING_NONE}.
+     *
+     * @type {number}
+     */
+    set widthFitting(value) {
+        if (value !== this._widthFitting) {
+            this._widthFitting = value;
+            this._scheduleReflow();
+        }
+    }
+
+    /**
+     * Gets the width fitting mode to be applied when positioning and scaling child elements.
+     *
+     * @type {number}
+     */
+    get widthFitting() {
+        return this._widthFitting;
+    }
+
+    /**
+     * Sets the height fitting mode to be applied when positioning and scaling child elements.
+     * Identical to {@link widthFitting} but for the Y axis. Defaults to {@link FITTING_NONE}.
+     *
+     * @type {number}
+     */
+    set heightFitting(value) {
+        if (value !== this._heightFitting) {
+            this._heightFitting = value;
+            this._scheduleReflow();
+        }
+    }
+
+    /**
+     * Gets the height fitting mode to be applied when positioning and scaling child elements.
+     *
+     * @type {number}
+     */
+    get heightFitting() {
+        return this._heightFitting;
+    }
+
+    /**
+     * Sets whether or not to wrap children onto a new row/column when the size of the container is
+     * exceeded. Defaults to false, which means that children will be rendered in a single row
+     * (horizontal orientation) or column (vertical orientation). Note that setting wrap to true
+     * makes it impossible for the {@link FITTING_BOTH} fitting mode to operate in any logical
+     * manner. For this reason, when wrap is true, a {@link widthFitting} or {@link heightFitting}
+     * mode of {@link FITTING_BOTH} will be coerced to {@link FITTING_STRETCH}.
+     *
+     * @type {boolean}
+     */
+    set wrap(value) {
+        if (value !== this._wrap) {
+            this._wrap = value;
+            this._scheduleReflow();
+        }
+    }
+
+    /**
+     * Gets whether or not to wrap children onto a new row/column when the size of the container is
+     * exceeded.
+     *
+     * @type {boolean}
+     */
+    get wrap() {
+        return this._wrap;
     }
 
     _isSelfOrChild(entity) {
@@ -166,17 +394,17 @@ class LayoutGroupComponent extends Component {
     }
 
     reflow() {
-        var container = getElement(this.entity);
-        var elements = this.entity.children.filter(isEnabledAndHasEnabledElement).map(getElement);
+        const container = getElement(this.entity);
+        const elements = this.entity.children.filter(isEnabledAndHasEnabledElement).map(getElement);
 
         if (!container || elements.length === 0) {
             return;
         }
 
-        var containerWidth = Math.max(container.calculatedWidth, 0);
-        var containerHeight = Math.max(container.calculatedHeight, 0);
+        const containerWidth = Math.max(container.calculatedWidth, 0);
+        const containerHeight = Math.max(container.calculatedHeight, 0);
 
-        var options = {
+        const options = {
             orientation: this._orientation,
             reverseX: this._reverseX,
             reverseY: this._reverseY,
@@ -193,7 +421,7 @@ class LayoutGroupComponent extends Component {
         // a child element triggers another reflow on the next frame, and so on)
         // we flag that a reflow is currently in progress.
         this._isPerformingReflow = true;
-        var layoutInfo = this._layoutCalculator.calculateLayout(elements, options);
+        const layoutInfo = this._layoutCalculator.calculateLayout(elements, options);
         this._isPerformingReflow = false;
 
         this.fire('reflow', layoutInfo);
@@ -209,9 +437,9 @@ class LayoutGroupComponent extends Component {
 
         this._listenForReflowEvents(this.entity, 'off');
 
-        this.entity.children.forEach(function (child) {
+        this.entity.children.forEach((child) => {
             this._listenForReflowEvents(child, 'off');
-        }.bind(this));
+        });
 
         this.system.app.systems.element.off('add', this._onElementOrLayoutComponentAdd, this);
         this.system.app.systems.element.off('beforeremove', this._onElementOrLayoutComponentRemove, this);
@@ -219,32 +447,5 @@ class LayoutGroupComponent extends Component {
         this.system.app.systems.layoutchild.off('beforeremove', this._onElementOrLayoutComponentRemove, this);
     }
 }
-
-function defineReflowSchedulingProperty(name) {
-    var _name = '_' + name;
-
-    Object.defineProperty(LayoutGroupComponent.prototype, name, {
-        get: function () {
-            return this[_name];
-        },
-
-        set: function (value) {
-            if (this[_name] !== value) {
-                this[_name] = value;
-                this._scheduleReflow();
-            }
-        }
-    });
-}
-
-defineReflowSchedulingProperty('orientation');
-defineReflowSchedulingProperty('reverseX');
-defineReflowSchedulingProperty('reverseY');
-defineReflowSchedulingProperty('alignment');
-defineReflowSchedulingProperty('padding');
-defineReflowSchedulingProperty('spacing');
-defineReflowSchedulingProperty('widthFitting');
-defineReflowSchedulingProperty('heightFitting');
-defineReflowSchedulingProperty('wrap');
 
 export { LayoutGroupComponent };

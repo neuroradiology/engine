@@ -1,25 +1,32 @@
 import { extend } from '../../../core/core.js';
-
-import { Asset } from '../../../asset/asset.js';
-
+import { Vec3 } from '../../../core/math/vec3.js';
+import { BoundingBox } from '../../../core/shape/bounding-box.js';
+import { getDefaultMaterial } from '../../../scene/materials/default-material.js';
+import { Asset } from '../../asset/asset.js';
 import { Component } from '../component.js';
 import { ComponentSystem } from '../system.js';
-
 import { ModelComponent } from './component.js';
 import { ModelComponentData } from './data.js';
+
+/**
+ * @import { AppBase } from '../../app-base.js'
+ */
 
 const _schema = ['enabled'];
 
 /**
- * @class
- * @name pc.ModelComponentSystem
- * @augments pc.ComponentSystem
- * @classdesc Allows an Entity to render a model or a primitive shape like a box,
- * capsule, sphere, cylinder, cone etc.
- * @description Create a new ModelComponentSystem.
- * @param {pc.Application} app - The Application.
+ * Allows an Entity to render a model or a primitive shape like a box, capsule, sphere, cylinder,
+ * cone etc.
+ *
+ * @category Graphics
  */
 class ModelComponentSystem extends ComponentSystem {
+    /**
+     * Create a new ModelComponentSystem instance.
+     *
+     * @param {AppBase} app - The Application.
+     * @ignore
+     */
     constructor(app) {
         super(app);
 
@@ -29,7 +36,7 @@ class ModelComponentSystem extends ComponentSystem {
         this.DataType = ModelComponentData;
 
         this.schema = _schema;
-        this.defaultMaterial = app.scene.defaultMaterial;
+        this.defaultMaterial = getDefaultMaterial(app.graphicsDevice);
 
         this.on('beforeremove', this.onRemove, this);
     }
@@ -61,17 +68,21 @@ class ModelComponentSystem extends ComponentSystem {
             _data.layers = _data.layers.slice(0);
         }
 
-        for (var i = 0; i < properties.length; i++) {
+        for (let i = 0; i < properties.length; i++) {
             if (_data.hasOwnProperty(properties[i])) {
                 component[properties[i]] = _data[properties[i]];
             }
+        }
+
+        if (_data.aabbCenter && _data.aabbHalfExtents) {
+            component.customAabb = new BoundingBox(new Vec3(_data.aabbCenter), new Vec3(_data.aabbHalfExtents));
         }
 
         super.initializeComponentData(component, _data, ['enabled']);
     }
 
     cloneComponent(entity, clone) {
-        var data = {
+        const data = {
             type: entity.model.type,
             asset: entity.model.asset,
             castShadows: entity.model.castShadows,
@@ -89,12 +100,12 @@ class ModelComponentSystem extends ComponentSystem {
         // if original has a different material
         // than the assigned materialAsset then make sure we
         // clone that one instead of the materialAsset one
-        var materialAsset = entity.model.materialAsset;
+        let materialAsset = entity.model.materialAsset;
         if (!(materialAsset instanceof Asset) && materialAsset != null) {
             materialAsset = this.app.assets.get(materialAsset);
         }
 
-        var material = entity.model.material;
+        const material = entity.model.material;
         if (!material ||
             material === this.defaultMaterial ||
             !materialAsset ||
@@ -103,7 +114,7 @@ class ModelComponentSystem extends ComponentSystem {
             data.materialAsset = materialAsset;
         }
 
-        var component = this.addComponent(clone, data);
+        const component = this.addComponent(clone, data);
 
         // clone the original model if the original model component is of type asset but
         // has no specified asset
@@ -112,20 +123,27 @@ class ModelComponentSystem extends ComponentSystem {
             component._clonedModel = true;
         }
 
-        if (!data.materialAsset)
+        if (!data.materialAsset) {
             component.material = material;
+        }
 
-        // TODO: we should copy all relevant meshinstance properties here
+        // TODO: we should copy all relevant mesh instance properties here
         if (entity.model.model) {
-            var meshInstances = entity.model.model.meshInstances;
-            var meshInstancesClone = component.model.meshInstances;
-            for (var i = 0; i < meshInstances.length; i++) {
+            const meshInstances = entity.model.model.meshInstances;
+            const meshInstancesClone = component.model.meshInstances;
+            for (let i = 0; i < meshInstances.length; i++) {
                 meshInstancesClone[i].mask = meshInstances[i].mask;
                 meshInstancesClone[i].material = meshInstances[i].material;
                 meshInstancesClone[i].layer = meshInstances[i].layer;
                 meshInstancesClone[i].receiveShadow = meshInstances[i].receiveShadow;
             }
         }
+
+        if (entity.model.customAabb) {
+            component.customAabb = entity.model.customAabb.clone();
+        }
+
+        return component;
     }
 
     onRemove(entity, component) {

@@ -1,13 +1,12 @@
-import { AnimTarget } from '../../../anim/evaluator/anim-target.js';
-import { DefaultAnimBinder } from '../../../anim/binder/default-anim-binder.js';
-import { AnimBinder } from '../../../anim/binder/anim-binder.js';
+import { AnimTarget } from '../../anim/evaluator/anim-target.js';
+import { DefaultAnimBinder } from '../../anim/binder/default-anim-binder.js';
+import { AnimBinder } from '../../anim/binder/anim-binder.js';
 
-import { Color } from '../../../core/color.js';
-
-import { Quat } from '../../../math/quat.js';
-import { Vec2 } from '../../../math/vec2.js';
-import { Vec3 } from '../../../math/vec3.js';
-import { Vec4 } from '../../../math/vec4.js';
+import { Color } from '../../../core/math/color.js';
+import { Quat } from '../../../core/math/quat.js';
+import { Vec2 } from '../../../core/math/vec2.js';
+import { Vec3 } from '../../../core/math/vec3.js';
+import { Vec4 } from '../../../core/math/vec4.js';
 
 const v2 = new Vec2();
 const v3 = new Vec3();
@@ -16,9 +15,12 @@ const c  = new Color();
 const q  = new Quat();
 
 class AnimComponentBinder extends DefaultAnimBinder {
-    constructor(animComponent, graph) {
+    constructor(animComponent, graph, layerName, mask, layerIndex) {
         super(graph);
         this.animComponent = animComponent;
+        this._mask = mask;
+        this.layerName = layerName;
+        this.layerIndex = layerIndex;
     }
 
     static _packFloat(values) {
@@ -67,43 +69,57 @@ class AnimComponentBinder extends DefaultAnimBinder {
     }
 
     resolve(path) {
-        var propertyLocation = AnimBinder.decode(path);
+        const encodedPath = AnimBinder.encode(path.entityPath, path.component, path.propertyPath);
+        let target = this.targetCache[encodedPath];
+        if (target) return target;
 
-        var entity = this._getEntityFromHierarchy(propertyLocation.entityPath);
+        let entity;
+        let propertyComponent;
+        let targetPath;
 
-        if (!entity)
-            return null;
-
-        var propertyComponent;
-
-        switch (propertyLocation.component) {
+        switch (path.component) {
             case 'entity':
+                entity = this._getEntityFromHierarchy(path.entityPath);
+                targetPath = AnimBinder.encode(
+                    entity.path,
+                    'entity',
+                    path.propertyPath
+                );
                 propertyComponent = entity;
                 break;
             case 'graph':
-                if (entity.model && entity.model.model && entity.model.model.graph) {
-                    propertyComponent = entity.model.model.graph.findByPath(propertyLocation.entityPath[0]);
-                }
-                if (!propertyComponent) {
-                    var entityPath = AnimBinder.splitPath(propertyLocation.entityPath[0], '/');
-                    propertyComponent = this.nodes[entityPath[entityPath.length - 1] || ""];
-                }
+                propertyComponent = this.findNode(path);
                 if (!propertyComponent) return null;
+                targetPath = AnimBinder.encode(
+                    propertyComponent.path,
+                    'graph',
+                    path.propertyPath
+                );
                 break;
             default:
-                propertyComponent = entity.findComponent(propertyLocation.component);
-                if (!propertyComponent)
+                entity = this._getEntityFromHierarchy(path.entityPath);
+                propertyComponent = entity.findComponent(path.component);
+                if (!propertyComponent) {
                     return null;
+                }
+                targetPath = AnimBinder.encode(
+                    entity.path,
+                    path.component,
+                    path.propertyPath
+                );
+                break;
         }
 
-        return this._createAnimTargetForProperty(propertyComponent, propertyLocation.propertyPath);
+        target = this._createAnimTargetForProperty(propertyComponent, path.propertyPath, targetPath);
+        this.targetCache[encodedPath] = target;
+        return target;
     }
 
     update(deltaTime) {
         // flag active nodes as dirty
-        var activeNodes = this.activeNodes;
+        const activeNodes = this.activeNodes;
         if (activeNodes) {
-            for (var i = 0; i < activeNodes.length; i++) {
+            for (let i = 0; i < activeNodes.length; i++) {
                 activeNodes[i]._dirtifyLocal();
             }
         }
@@ -114,18 +130,18 @@ class AnimComponentBinder extends DefaultAnimBinder {
             return null;
         }
 
-        var currEntity = this.animComponent.entity;
+        const currEntity = this.animComponent.entity;
 
         if (entityHierarchy.length === 1) {
             return currEntity;
         }
-        return currEntity._parent.findByPath(entityHierarchy.join('/'));
+        return currEntity._parent.findByPath(entityHierarchy);
     }
 
     // resolve an object path
     _resolvePath(object, path, resolveLeaf) {
-        var steps = path.length - (resolveLeaf ? 0 : 1);
-        for (var i = 0; i < steps; i++) {
+        const steps = path.length - (resolveLeaf ? 0 : 1);
+        for (let i = 0; i < steps; i++) {
             object = object[path[i]];
         }
         return object;
@@ -135,19 +151,26 @@ class AnimComponentBinder extends DefaultAnimBinder {
     // is a function which takes the animation values array and packages them for the target property
     // in the correct format (i.e. vec2, quat, color etc).
     _setter(object, path, packFunc) {
-        var obj = this._resolvePath(object, path);
-        var key = path[path.length - 1];
+        const obj = this._resolvePath(object, path);
+        const key = path[path.length - 1];
 
         // if the object has a setter function, use it
-        var setterFunc = "set" + key.substring(0, 1).toUpperCase() + key.substring(1);
-        if (obj[setterFunc]) {
-            var func = obj[setterFunc].bind(obj);
-            return function (values) {
-                func(packFunc(values));
+        const setterFuncName = `set${key.substring(0, 1).toUpperCase()}${key.substring(1)}`;
+        if (obj[setterFuncName]) {
+            // if the object has a setter function, use it
+            const getterFunc = obj[`get${key.substring(0, 1).toUpperCase()}${key.substring(1)}`].bind(obj);
+            let baseValues = getterFunc();
+            baseValues = [baseValues.x, baseValues.y, baseValues.z, baseValues.w];
+            const setterFunc = obj[setterFuncName].bind(obj);
+            return {
+                set: (values) => {
+                    setterFunc(packFunc(values));
+                },
+                get: () => baseValues
             };
         }
 
-        var prop = obj[key];
+        const prop = obj[key];
 
         // if the target property has a copy function, use it (vec3, color, quat)
         if (typeof prop === 'object' && prop.hasOwnProperty('copy')) {
@@ -156,12 +179,12 @@ class AnimComponentBinder extends DefaultAnimBinder {
             };
         }
 
-        // when animating individual members of vec/colour/quaternion, we must also invoke the
+        // when animating individual members of vec/color/quaternion, we must also invoke the
         // object's setter. this is required by some component properties which have custom
         // handlers which propagate the changes correctly.
         if ([Vec2, Vec3, Vec4, Color, Quat].indexOf(obj.constructor) !== -1 && path.length > 1) {
-            var parent = path.length > 2 ? this._resolvePath(object, path.slice(0, -1)) : object;
-            var objKey = path[path.length - 2];
+            const parent = path.length > 2 ? this._resolvePath(object, path.slice(0, -1)) : object;
+            const objKey = path[path.length - 2];
             return function (values) {
                 obj[key] = packFunc(values);
                 parent[objKey] = obj;
@@ -174,26 +197,27 @@ class AnimComponentBinder extends DefaultAnimBinder {
         };
     }
 
-    _createAnimTargetForProperty(propertyComponent, propertyHierarchy) {
+    _createAnimTargetForProperty(propertyComponent, propertyHierarchy, targetPath) {
 
-        if (this.handlers && propertyHierarchy[0] === 'weights') {
-            return this.handlers.weights(propertyComponent);
+        if (this.handlers && propertyHierarchy[0].startsWith('weight.')) {
+            return this.handlers.weight(propertyComponent, propertyHierarchy[0].replace('weight.', ''));
         } else if (this.handlers && propertyHierarchy[0] === 'material' && propertyHierarchy.length === 2) {
-            var materialPropertyName = propertyHierarchy[1];
+            const materialPropertyName = propertyHierarchy[1];
             // if the property name ends in Map then we're binding a material texture
-            if (materialPropertyName.indexOf('Map') === materialPropertyName.length - 3) {
+            if (materialPropertyName.endsWith('Map')) {
                 return this.handlers.materialTexture(propertyComponent, materialPropertyName);
             }
         }
 
-        var property = this._resolvePath(propertyComponent, propertyHierarchy, true);
+        const property = this._resolvePath(propertyComponent, propertyHierarchy, true);
 
-        if (typeof property === 'undefined')
+        if (typeof property === 'undefined') {
             return null;
+        }
 
-        var setter;
-        var animDataType;
-        var animDataComponents;
+        let setter;
+        let animDataType;
+        let animDataComponents;
 
         if (typeof property === 'number') {
             setter = this._setter(propertyComponent, propertyHierarchy, AnimComponentBinder._packFloat);
@@ -237,13 +261,37 @@ class AnimComponentBinder extends DefaultAnimBinder {
 
         // materials must have update called after changing settings
         if (propertyHierarchy.indexOf('material') !== -1) {
-            return new AnimTarget(function (values) {
+            return new AnimTarget((values) => {
                 setter(values);
                 propertyComponent.material.update();
-            }, animDataType, animDataComponents);
+            }, animDataType, animDataComponents, targetPath);
         }
 
-        return new AnimTarget(setter, animDataType, animDataComponents);
+        return new AnimTarget(setter, animDataType, animDataComponents, targetPath);
+    }
+
+    rebind() {
+        this.targetCache = {};
+        // #if _DEBUG
+        this.visitedFallbackGraphPaths = {};
+        // #endif
+
+        if (this.animComponent.rootBone) {
+            this.graph = this.animComponent.rootBone;
+        } else {
+            this.graph = this.animComponent.entity;
+        }
+
+        const nodes = { };
+        // cache node names so we can quickly resolve animation paths
+        const flatten = function (node) {
+            nodes[node.name] = node;
+            for (let i = 0; i < node.children.length; ++i) {
+                flatten(node.children[i]);
+            }
+        };
+        flatten(this.graph);
+        this.nodes = nodes;
     }
 }
 

@@ -1,21 +1,20 @@
-import { Color } from '../../../core/color.js';
-
-import { math } from '../../../math/math.js';
-import { Vec2 } from '../../../math/vec2.js';
-import { Vec3 } from '../../../math/vec3.js';
-import { Vec4 } from '../../../math/vec4.js';
-
+import { Debug } from '../../../core/debug.js';
+import { TRACEID_ELEMENT } from '../../../core/constants.js';
+import { math } from '../../../core/math/math.js';
+import { Color } from '../../../core/math/color.js';
+import { Vec2 } from '../../../core/math/vec2.js';
+import { Vec3 } from '../../../core/math/vec3.js';
+import { Vec4 } from '../../../core/math/vec4.js';
 import {
-    BUFFER_STATIC,
     FUNC_EQUAL,
-    PRIMITIVE_TRIFAN,
+    PRIMITIVE_TRISTRIP,
     SEMANTIC_POSITION, SEMANTIC_NORMAL, SEMANTIC_TEXCOORD0,
     STENCILOP_DECREMENT,
     TYPE_FLOAT32
-} from '../../../graphics/constants.js';
-import { VertexBuffer } from '../../../graphics/vertex-buffer.js';
-import { VertexFormat } from '../../../graphics/vertex-format.js';
-
+} from '../../../platform/graphics/constants.js';
+import { VertexBuffer } from '../../../platform/graphics/vertex-buffer.js';
+import { VertexFormat } from '../../../platform/graphics/vertex-format.js';
+import { DeviceCache } from '../../../platform/graphics/device-cache.js';
 import {
     LAYER_HUD, LAYER_WORLD,
     SPRITE_RENDERMODE_SIMPLE, SPRITE_RENDERMODE_SLICED, SPRITE_RENDERMODE_TILED
@@ -24,13 +23,20 @@ import { GraphNode } from '../../../scene/graph-node.js';
 import { Mesh } from '../../../scene/mesh.js';
 import { MeshInstance } from '../../../scene/mesh-instance.js';
 import { Model } from '../../../scene/model.js';
-import { StencilParameters } from '../../../scene/stencil-parameters.js';
+import { StencilParameters } from '../../../platform/graphics/stencil-parameters.js';
+import { FITMODE_STRETCH, FITMODE_CONTAIN, FITMODE_COVER } from './constants.js';
+import { Asset } from '../../asset/asset.js';
 
-import { Asset } from '../../../asset/asset.js';
+/**
+ * @import { BoundingBox } from '../../../core/shape/bounding-box.js'
+ * @import { EventHandle } from '../../../core/event-handle.js'
+ * @import { Material } from '../../../scene/materials/material.js'
+ * @import { Sprite } from '../../../scene/sprite.js'
+ * @import { Texture } from '../../../platform/graphics/texture.js'
+ */
 
-// #ifdef DEBUG
-var _debugLogging = false;
-// #endif
+const _tempColor = new Color();
+const _vertexFormatDeviceCache = new DeviceCache();
 
 class ImageRenderable {
     constructor(entity, mesh, material) {
@@ -42,8 +48,8 @@ class ImageRenderable {
         this.model.graph = this.node;
 
         this.mesh = mesh;
-        this.meshInstance = new MeshInstance(this.node, this.mesh, material);
-        this.meshInstance.name = 'ImageElement: ' + entity.name;
+        this.meshInstance = new MeshInstance(this.mesh, material, this.node);
+        this.meshInstance.name = `ImageElement: ${entity.name}`;
         this.meshInstance.castShadow = false;
         this.meshInstance.receiveShadow = false;
 
@@ -64,7 +70,10 @@ class ImageRenderable {
         this.model = null;
         this.node = null;
         this.mesh = null;
+        this.meshInstance?.destroy();
         this.meshInstance = null;
+        this.unmaskMeshInstance?.destroy();
+        this.unmaskMeshInstance = null;
         this._entity = null;
         this._element = null;
     }
@@ -86,9 +95,14 @@ class ImageRenderable {
     setMask(mask) {
         if (!this.meshInstance) return;
 
+        // remove model to remove mesh instance from layers
+        if (this._entity.enabled && this._element.enabled) {
+            this._element.removeModelFromLayers(this.model);
+        }
+
         if (mask) {
-            this.unmaskMeshInstance = new MeshInstance(this.node, this.mesh, this.meshInstance.material);
-            this.unmaskMeshInstance.name = 'Unmask: ' + this._entity.name;
+            this.unmaskMeshInstance = new MeshInstance(this.mesh, this.meshInstance.material, this.node);
+            this.unmaskMeshInstance.name = `Unmask: ${this._entity.name}`;
             this.unmaskMeshInstance.castShadow = false;
             this.unmaskMeshInstance.receiveShadow = false;
             this.unmaskMeshInstance.pick = false;
@@ -96,23 +110,25 @@ class ImageRenderable {
             this.model.meshInstances.push(this.unmaskMeshInstance);
 
             // copy parameters
-            for (var name in this.meshInstance.parameters) {
+            for (const name in this.meshInstance.parameters) {
                 this.unmaskMeshInstance.setParameter(name, this.meshInstance.parameters[name].data);
             }
         } else {
             // remove unmask mesh instance from model
-            var idx = this.model.meshInstances.indexOf(this.unmaskMeshInstance);
+            const idx = this.model.meshInstances.indexOf(this.unmaskMeshInstance);
             if (idx >= 0) {
                 this.model.meshInstances.splice(idx, 1);
             }
-
-            this.unmaskMeshInstance = null;
         }
 
-        // remove model then re-add to update to current mesh instances
+        // re-add to update to current mesh instances
         if (this._entity.enabled && this._element.enabled) {
-            this._element.removeModelFromLayers(this.model);
             this._element.addModelToLayers(this.model);
+        }
+
+        if (!mask) {
+            this.unmaskMeshInstance?.destroy();
+            this.unmaskMeshInstance = null;
         }
     }
 
@@ -146,12 +162,12 @@ class ImageRenderable {
     setUnmaskDrawOrder() {
         if (!this.meshInstance) return;
 
-        var getLastChild = function (e) {
-            var last;
-            var c = e.children;
-            var l = c.length;
+        const getLastChild = function (e) {
+            let last;
+            const c = e.children;
+            const l = c.length;
             if (l) {
-                for (var i = 0; i < l; i++) {
+                for (let i = 0; i < l; i++) {
                     if (c[i].element) {
                         last = c[i];
                     }
@@ -159,7 +175,7 @@ class ImageRenderable {
 
                 if (!last) return null;
 
-                var child = getLastChild(last);
+                const child = getLastChild(last);
                 if (child) {
                     return child;
                 }
@@ -178,32 +194,32 @@ class ImageRenderable {
         // The offset is reduced by a small fraction each time so that if multiple masks
         // end on the same last child they are unmasked in the correct order.
         if (this.unmaskMeshInstance) {
-            var lastChild = getLastChild(this._entity);
+            const lastChild = getLastChild(this._entity);
             if (lastChild && lastChild.element) {
                 this.unmaskMeshInstance.drawOrder = lastChild.element.drawOrder + lastChild.element.getMaskOffset();
             } else {
                 this.unmaskMeshInstance.drawOrder = this.meshInstance.drawOrder + this._element.getMaskOffset();
             }
-            // #ifdef DEBUG
-            if (_debugLogging) console.log('setDrawOrder: ', this.unmaskMeshInstance.name, this.unmaskMeshInstance.drawOrder);
-            // #endif
+            Debug.trace(TRACEID_ELEMENT, 'setDrawOrder: ', this.unmaskMeshInstance.name, this.unmaskMeshInstance.drawOrder);
         }
     }
 
     setDrawOrder(drawOrder) {
-        if (!this.meshInstance) return;
-        // #ifdef DEBUG
-        if (_debugLogging) console.log('setDrawOrder: ', this.meshInstance.name, drawOrder);
-        // #endif
+        if (!this.meshInstance) {
+            return;
+        }
+
+        Debug.trace(TRACEID_ELEMENT, 'setDrawOrder: ', this.meshInstance.name, drawOrder);
+
         this.meshInstance.drawOrder = drawOrder;
     }
 
     setCull(cull) {
         if (!this.meshInstance) return;
-        var element = this._element;
+        const element = this._element;
 
-        var visibleFn = null;
-        if (cull && element._isScreenCulled()) {
+        let visibleFn = null;
+        if (cull && element._isScreenSpace()) {
             visibleFn = function (camera) {
                 return element.isVisibleForCamera(camera);
             };
@@ -258,20 +274,34 @@ class ImageRenderable {
 }
 
 class ImageElement {
+    /**
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtSetMeshes = null;
+
     constructor(element) {
         this._element = element;
         this._entity = element.entity;
         this._system = element.system;
 
         // public
+        /** @type {number} */
         this._textureAsset = null;
+        /** @type {Texture} */
         this._texture = null;
+        /** @type {number} */
         this._materialAsset = null;
+        /** @type {Material} */
         this._material = null;
+        /** @type {number} */
         this._spriteAsset = null;
+        /** @type {Sprite} */
         this._sprite = null;
         this._spriteFrame = 0;
+        /** @type {number} */
         this._pixelsPerUnit = null;
+        this._targetAspectRatio = -1; // will be set when assigning textures
 
         this._rect = new Vec4(0, 0, 1, 1); // x, y, w, h
 
@@ -292,7 +322,7 @@ class ImageElement {
         // set default colors
         this._color = new Color(1, 1, 1, 1);
         this._colorUniform = new Float32Array([1, 1, 1]);
-        this._renderable.setParameter('material_emissive', this._colorUniform);
+        this._updateRenderableEmissive();
         this._renderable.setParameter('material_opacity', 1);
 
         this._updateAabbFunc = this._updateAabb.bind(this);
@@ -307,6 +337,12 @@ class ImageElement {
         this._element.on('set:screen', this._onScreenChange, this);
         this._element.on('set:draworder', this._onDrawOrderChange, this);
         this._element.on('screen:set:resolution', this._onResolutionChange, this);
+
+        // If not being initialized (i.e., type changed after component was already enabled),
+        // we need to call onEnable to add the model to layers
+        if (!element._beingInitialized && element.enabled && element.entity.enabled) {
+            this.onEnable();
+        }
     }
 
     destroy() {
@@ -372,16 +408,17 @@ class ImageElement {
     }
 
     _updateMaterial(screenSpace) {
-        var mask = !!this._mask;
-        var nineSliced = !!(this.sprite && this.sprite.renderMode === SPRITE_RENDERMODE_SLICED);
-        var nineTiled = !!(this.sprite && this.sprite.renderMode === SPRITE_RENDERMODE_TILED);
+        const mask = !!this._mask;
+        const nineSliced = !!(this.sprite && this.sprite.renderMode === SPRITE_RENDERMODE_SLICED);
+        const nineTiled = !!(this.sprite && this.sprite.renderMode === SPRITE_RENDERMODE_TILED);
 
         if (!this._hasUserMaterial()) {
             this._material = this._system.getImageElementMaterial(screenSpace, mask, nineSliced, nineTiled);
         }
 
         if (this._renderable) {
-            this._renderable.setCull(true); // culling is now always true (screenspace culled by isCulled, worldspace by frustum)
+            // culling is always true for non-screenspace (frustrum is used); for screenspace, use the 'cull' property
+            this._renderable.setCull(!this._element._isScreenSpace() || this._element._isScreenCulled());
             this._renderable.setMaterial(this._material);
             this._renderable.setScreenSpace(screenSpace);
             this._renderable.setLayer(screenSpace ? LAYER_HUD : LAYER_WORLD);
@@ -390,57 +427,47 @@ class ImageElement {
 
     // build a quad for the image
     _createMesh() {
-        var element = this._element;
-        var w = element.calculatedWidth;
-        var h = element.calculatedHeight;
+        const element = this._element;
+        const w = element.calculatedWidth;
+        const h = element.calculatedHeight;
+        const r = this._rect;
+        const device = this._system.app.graphicsDevice;
 
-        var r = this._rect;
+        // content of the vertex buffer for 4 vertices, rendered as a tristrip
+        const vertexData = new Float32Array([
+            w, 0, 0,                        // position
+            0, 0, 1,                        // normal
+            r.x + r.z, 1.0 - r.y,           // uv
 
-        // Note that when creating a typed array, it's initialized to zeros.
-        // Allocate memory for 4 vertices, 8 floats per vertex, 4 bytes per float.
-        var vertexData = new ArrayBuffer(4 * 8 * 4);
-        var vertexDataF32 = new Float32Array(vertexData);
+            w, h, 0,                        // position
+            0, 0, 1,                        // normal
+            r.x + r.z, 1.0 - (r.y + r.w),   // uv
 
-        // Vertex layout is: PX, PY, PZ, NX, NY, NZ, U, V
-        // Since the memory is zeroed, we will only set non-zero elements
+            0, 0, 0,                        // position
+            0, 0, 1,                        // normal
+            r.x, 1.0 - r.y,                 // uv
 
-        // POS: 0, 0, 0
-        vertexDataF32[5] = 1;          // NZ
-        vertexDataF32[6] = r.x;        // U
-        vertexDataF32[7] = r.y;        // V
+            0, h, 0,                        // position
+            0, 0, 1,                        // normal
+            r.x, 1.0 - (r.y + r.w)          // uv
+        ]);
 
-        // POS: w, 0, 0
-        vertexDataF32[8] = w;          // PX
-        vertexDataF32[13] = 1;         // NZ
-        vertexDataF32[14] = r.x + r.z; // U
-        vertexDataF32[15] = r.y;       // V
+        // per device cached vertex format, to share it by all vertex buffers
+        const vertexFormat = _vertexFormatDeviceCache.get(device, () => {
+            return new VertexFormat(device, [
+                { semantic: SEMANTIC_POSITION, components: 3, type: TYPE_FLOAT32 },
+                { semantic: SEMANTIC_NORMAL, components: 3, type: TYPE_FLOAT32 },
+                { semantic: SEMANTIC_TEXCOORD0, components: 2, type: TYPE_FLOAT32 }
+            ]);
+        });
 
-        // POS: w, h, 0
-        vertexDataF32[16] = w;         // PX
-        vertexDataF32[17] = h;         // PY
-        vertexDataF32[21] = 1;         // NZ
-        vertexDataF32[22] = r.x + r.z; // U
-        vertexDataF32[23] = r.y + r.w; // V
+        const vertexBuffer = new VertexBuffer(device, vertexFormat, 4, {
+            data: vertexData.buffer
+        });
 
-        // POS: 0, h, 0
-        vertexDataF32[25] = h;         // PY
-        vertexDataF32[29] = 1;         // NZ
-        vertexDataF32[30] = r.x;       // U
-        vertexDataF32[31] = r.y + r.w; // V
-
-        var vertexDesc = [
-            { semantic: SEMANTIC_POSITION, components: 3, type: TYPE_FLOAT32 },
-            { semantic: SEMANTIC_NORMAL, components: 3, type: TYPE_FLOAT32 },
-            { semantic: SEMANTIC_TEXCOORD0, components: 2, type: TYPE_FLOAT32 }
-        ];
-
-        var device = this._system.app.graphicsDevice;
-        var vertexFormat = new VertexFormat(device, vertexDesc);
-        var vertexBuffer = new VertexBuffer(device, vertexFormat, 4, BUFFER_STATIC, vertexData);
-
-        var mesh = new Mesh(device);
+        const mesh = new Mesh(device);
         mesh.vertexBuffer = vertexBuffer;
-        mesh.primitive[0].type = PRIMITIVE_TRIFAN;
+        mesh.primitive[0].type = PRIMITIVE_TRISTRIP;
         mesh.primitive[0].base = 0;
         mesh.primitive[0].count = 4;
         mesh.primitive[0].indexed = false;
@@ -452,12 +479,25 @@ class ImageElement {
     }
 
     _updateMesh(mesh) {
-        var element = this._element;
-        var w = element.calculatedWidth;
-        var h = element.calculatedHeight;
+        const element = this._element;
+        let w = element.calculatedWidth;
+        let h = element.calculatedHeight;
+
+        if (element.fitMode !== FITMODE_STRETCH && this._targetAspectRatio > 0) {
+            const actualRatio = element.calculatedWidth / element.calculatedHeight;
+            // check which coordinate must change in order to preserve the source aspect ratio
+            if ((element.fitMode === FITMODE_CONTAIN && actualRatio > this._targetAspectRatio) ||
+                (element.fitMode === FITMODE_COVER && actualRatio < this._targetAspectRatio)) {
+                // use 'height' to re-calculate width
+                w = element.calculatedHeight * this._targetAspectRatio;
+            } else {
+                // use 'width' to re-calculate height
+                h = element.calculatedWidth / this._targetAspectRatio;
+            }
+        }
 
         // update material
-        var screenSpace = element._isScreenSpace();
+        const screenSpace = element._isScreenSpace();
         this._updateMaterial(screenSpace);
 
         // force update meshInstance aabb
@@ -466,9 +506,9 @@ class ImageElement {
         if (this.sprite && (this.sprite.renderMode === SPRITE_RENDERMODE_SLICED || this.sprite.renderMode === SPRITE_RENDERMODE_TILED)) {
 
             // calculate inner offset from the frame's border
-            var frameData = this._sprite.atlas.frames[this._sprite.frameKeys[this._spriteFrame]];
-            var borderWidthScale = 2 / frameData.rect.z;
-            var borderHeightScale = 2 / frameData.rect.w;
+            const frameData = this._sprite.atlas.frames[this._sprite.frameKeys[this._spriteFrame]];
+            const borderWidthScale = 2 / frameData.rect.z;
+            const borderHeightScale = 2 / frameData.rect.w;
 
             this._innerOffset.set(
                 frameData.border.x * borderWidthScale,
@@ -477,22 +517,22 @@ class ImageElement {
                 frameData.border.w * borderHeightScale
             );
 
-            var tex = this.sprite.atlas.texture;
+            const tex = this.sprite.atlas.texture;
             this._atlasRect.set(frameData.rect.x / tex.width,
-                                frameData.rect.y / tex.height,
-                                frameData.rect.z / tex.width,
-                                frameData.rect.w / tex.height);
+                frameData.rect.y / tex.height,
+                frameData.rect.z / tex.width,
+                frameData.rect.w / tex.height);
 
             // scale: apply PPU
-            var ppu = this._pixelsPerUnit !== null ? this._pixelsPerUnit : this.sprite.pixelsPerUnit;
-            var scaleMulX = frameData.rect.z / ppu;
-            var scaleMulY = frameData.rect.w / ppu;
+            const ppu = this._pixelsPerUnit !== null ? this._pixelsPerUnit : this.sprite.pixelsPerUnit;
+            const scaleMulX = frameData.rect.z / ppu;
+            const scaleMulY = frameData.rect.w / ppu;
 
             // scale borders if necessary instead of overlapping
             this._outerScale.set(Math.max(w, this._innerOffset.x * scaleMulX), Math.max(h, this._innerOffset.y * scaleMulY));
 
-            var scaleX = scaleMulX;
-            var scaleY = scaleMulY;
+            let scaleX = scaleMulX;
+            let scaleY = scaleMulY;
 
             this._outerScale.x /= scaleMulX;
             this._outerScale.y /= scaleMulY;
@@ -522,30 +562,29 @@ class ImageElement {
                 this._renderable.node.setLocalPosition((0.5 - element.pivot.x) * w, (0.5 - element.pivot.y) * h, 0);
             }
         } else {
-            var vb = mesh.vertexBuffer;
-            var vertexDataF32 = new Float32Array(vb.lock());
+            const vb = mesh.vertexBuffer;
+            const vertexDataF32 = new Float32Array(vb.lock());
 
             // offset for pivot
-            var hp = element.pivot.x;
-            var vp = element.pivot.y;
+            const hp = element.pivot.x;
+            const vp = element.pivot.y;
 
             // Update vertex positions, accounting for the pivot offset
-            vertexDataF32[0] = 0 - hp * w;
+            vertexDataF32[0] = w - hp * w;
             vertexDataF32[1] = 0 - vp * h;
             vertexDataF32[8] = w - hp * w;
-            vertexDataF32[9] = 0 - vp * h;
-            vertexDataF32[16] = w - hp * w;
-            vertexDataF32[17] = h - vp * h;
+            vertexDataF32[9] = h - vp * h;
+            vertexDataF32[16] = 0 - hp * w;
+            vertexDataF32[17] = 0 - vp * h;
             vertexDataF32[24] = 0 - hp * w;
             vertexDataF32[25] = h - vp * h;
 
-
-            var atlasTextureWidth = 1;
-            var atlasTextureHeight = 1;
-            var rect = this._rect;
+            let atlasTextureWidth = 1;
+            let atlasTextureHeight = 1;
+            let rect = this._rect;
 
             if (this._sprite && this._sprite.frameKeys[this._spriteFrame] && this._sprite.atlas) {
-                var frame = this._sprite.atlas.frames[this._sprite.frameKeys[this._spriteFrame]];
+                const frame = this._sprite.atlas.frames[this._sprite.frameKeys[this._spriteFrame]];
                 if (frame) {
                     rect = frame.rect;
                     atlasTextureWidth = this._sprite.atlas.texture.width;
@@ -554,19 +593,19 @@ class ImageElement {
             }
 
             // Update vertex texture coordinates
-            vertexDataF32[6] = rect.x / atlasTextureWidth;
-            vertexDataF32[7] = rect.y / atlasTextureHeight;
+            vertexDataF32[6] = (rect.x + rect.z) / atlasTextureWidth;
+            vertexDataF32[7] = 1.0 - rect.y / atlasTextureHeight;
             vertexDataF32[14] = (rect.x + rect.z) / atlasTextureWidth;
-            vertexDataF32[15] = rect.y / atlasTextureHeight;
-            vertexDataF32[22] = (rect.x + rect.z) / atlasTextureWidth;
-            vertexDataF32[23] = (rect.y + rect.w) / atlasTextureHeight;
+            vertexDataF32[15] = 1.0 - (rect.y + rect.w) / atlasTextureHeight;
+            vertexDataF32[22] = rect.x / atlasTextureWidth;
+            vertexDataF32[23] = 1.0 - rect.y / atlasTextureHeight;
             vertexDataF32[30] = rect.x / atlasTextureWidth;
-            vertexDataF32[31] = (rect.y + rect.w) / atlasTextureHeight;
+            vertexDataF32[31] = 1.0 - (rect.y + rect.w) / atlasTextureHeight;
 
             vb.unlock();
 
-            var min = new Vec3(0 - hp * w, 0 - vp * h, 0);
-            var max = new Vec3(w - hp * w, h - vp * h, 0);
+            const min = new Vec3(0 - hp * w, 0 - vp * h, 0);
+            const max = new Vec3(w - hp * w, h - vp * h, 0);
             mesh.aabb.setMinMax(min, max);
 
             if (this._renderable) {
@@ -583,23 +622,37 @@ class ImageElement {
     // Gets the mesh from the sprite asset
     // if the sprite is 9-sliced or the default mesh from the
     // image element and calls _updateMesh or sets meshDirty to true
-    // if the component is currently being initialized. We need to call
-    // _updateSprite every time something related to the sprite asset changes
+    // if the component is currently being initialized. Also updates
+    // aspect ratio. We need to call _updateSprite every time
+    // something related to the sprite asset changes
     _updateSprite() {
-        var nineSlice = false;
-        var mesh = null;
+        let nineSlice = false;
+        let mesh = null;
 
-        // take mesh from sprite
+        // reset target aspect ratio
+        this._targetAspectRatio = -1;
+
         if (this._sprite && this._sprite.atlas) {
+            // take mesh from sprite
             mesh = this._sprite.meshes[this.spriteFrame];
             nineSlice = this._sprite.renderMode === SPRITE_RENDERMODE_SLICED || this._sprite.renderMode === SPRITE_RENDERMODE_TILED;
+
+            // re-calculate aspect ratio from sprite frame
+            const frameData = this._sprite.atlas.frames[this._sprite.frameKeys[this._spriteFrame]];
+            if (frameData?.rect.w > 0) {
+                this._targetAspectRatio = frameData.rect.z / frameData.rect.w;
+            }
         }
 
         // if we use 9 slicing then use that mesh otherwise keep using the default mesh
         this.mesh = nineSlice ? mesh : this._defaultMesh;
 
+        this.refreshMesh();
+    }
+
+    refreshMesh() {
         if (this.mesh) {
-            if (! this._element._beingInitialized) {
+            if (!this._element._beingInitialized) {
                 this._updateMesh(this.mesh);
             } else {
                 this._meshDirty = true;
@@ -618,7 +671,7 @@ class ImageElement {
     _toggleMask() {
         this._element._dirtifyMask();
 
-        var screenSpace = this._element._isScreenSpace();
+        const screenSpace = this._element._isScreenSpace();
         this._updateMaterial(screenSpace);
 
         this._renderable.setMask(!!this._mask);
@@ -629,7 +682,7 @@ class ImageElement {
     }
 
     _onMaterialAdded(asset) {
-        this._system.app.assets.off('add:' + asset.id, this._onMaterialAdded, this);
+        this._system.app.assets.off(`add:${asset.id}`, this._onMaterialAdded, this);
         if (this._materialAsset === asset.id) {
             this._bindMaterialAsset(asset);
         }
@@ -638,9 +691,9 @@ class ImageElement {
     _bindMaterialAsset(asset) {
         if (!this._entity.enabled) return; // don't bind until element is enabled
 
-        asset.on("load", this._onMaterialLoad, this);
-        asset.on("change", this._onMaterialChange, this);
-        asset.on("remove", this._onMaterialRemove, this);
+        asset.on('load', this._onMaterialLoad, this);
+        asset.on('change', this._onMaterialChange, this);
+        asset.on('remove', this._onMaterialRemove, this);
 
         if (asset.resource) {
             this._onMaterialLoad(asset);
@@ -650,9 +703,9 @@ class ImageElement {
     }
 
     _unbindMaterialAsset(asset) {
-        asset.off("load", this._onMaterialLoad, this);
-        asset.off("change", this._onMaterialChange, this);
-        asset.off("remove", this._onMaterialRemove, this);
+        asset.off('load', this._onMaterialLoad, this);
+        asset.off('change', this._onMaterialChange, this);
+        asset.off('remove', this._onMaterialRemove, this);
     }
 
     _onMaterialChange() {
@@ -664,7 +717,7 @@ class ImageElement {
     }
 
     _onTextureAdded(asset) {
-        this._system.app.assets.off('add:' + asset.id, this._onTextureAdded, this);
+        this._system.app.assets.off(`add:${asset.id}`, this._onTextureAdded, this);
         if (this._textureAsset === asset.id) {
             this._bindTextureAsset(asset);
         }
@@ -673,9 +726,9 @@ class ImageElement {
     _bindTextureAsset(asset) {
         if (!this._entity.enabled) return; // don't bind until element is enabled
 
-        asset.on("load", this._onTextureLoad, this);
-        asset.on("change", this._onTextureChange, this);
-        asset.on("remove", this._onTextureRemove, this);
+        asset.on('load', this._onTextureLoad, this);
+        asset.on('change', this._onTextureChange, this);
+        asset.on('remove', this._onTextureRemove, this);
 
         if (asset.resource) {
             this._onTextureLoad(asset);
@@ -685,9 +738,9 @@ class ImageElement {
     }
 
     _unbindTextureAsset(asset) {
-        asset.off("load", this._onTextureLoad, this);
-        asset.off("change", this._onTextureChange, this);
-        asset.off("remove", this._onTextureRemove, this);
+        asset.off('load', this._onTextureLoad, this);
+        asset.off('change', this._onTextureChange, this);
+        asset.off('remove', this._onTextureRemove, this);
     }
 
     _onTextureLoad(asset) {
@@ -704,7 +757,7 @@ class ImageElement {
 
     // When sprite asset is added bind it
     _onSpriteAssetAdded(asset) {
-        this._system.app.assets.off('add:' + asset.id, this._onSpriteAssetAdded, this);
+        this._system.app.assets.off(`add:${asset.id}`, this._onSpriteAssetAdded, this);
         if (this._spriteAsset === asset.id) {
             this._bindSpriteAsset(asset);
         }
@@ -714,9 +767,9 @@ class ImageElement {
     _bindSpriteAsset(asset) {
         if (!this._entity.enabled) return; // don't bind until element is enabled
 
-        asset.on("load", this._onSpriteAssetLoad, this);
-        asset.on("change", this._onSpriteAssetChange, this);
-        asset.on("remove", this._onSpriteAssetRemove, this);
+        asset.on('load', this._onSpriteAssetLoad, this);
+        asset.on('change', this._onSpriteAssetChange, this);
+        asset.on('remove', this._onSpriteAssetRemove, this);
 
         if (asset.resource) {
             this._onSpriteAssetLoad(asset);
@@ -726,12 +779,12 @@ class ImageElement {
     }
 
     _unbindSpriteAsset(asset) {
-        asset.off("load", this._onSpriteAssetLoad, this);
-        asset.off("change", this._onSpriteAssetChange, this);
-        asset.off("remove", this._onSpriteAssetRemove, this);
+        asset.off('load', this._onSpriteAssetLoad, this);
+        asset.off('change', this._onSpriteAssetChange, this);
+        asset.off('remove', this._onSpriteAssetRemove, this);
 
         if (asset.data.textureAtlasAsset) {
-            this._system.app.assets.off("load:" + asset.data.textureAtlasAsset, this._onTextureAtlasLoad, this);
+            this._system.app.assets.off(`load:${asset.data.textureAtlasAsset}`, this._onTextureAtlasLoad, this);
         }
     }
 
@@ -742,11 +795,11 @@ class ImageElement {
             this.sprite = null;
         } else {
             if (!asset.resource.atlas) {
-                var atlasAssetId = asset.data.textureAtlasAsset;
+                const atlasAssetId = asset.data.textureAtlasAsset;
                 if (atlasAssetId) {
-                    var assets = this._system.app.assets;
-                    assets.off('load:' + atlasAssetId, this._onTextureAtlasLoad, this);
-                    assets.once('load:' + atlasAssetId, this._onTextureAtlasLoad, this);
+                    const assets = this._system.app.assets;
+                    assets.off(`load:${atlasAssetId}`, this._onTextureAtlasLoad, this);
+                    assets.once(`load:${atlasAssetId}`, this._onTextureAtlasLoad, this);
                 }
             } else {
                 this.sprite = asset.resource;
@@ -764,7 +817,7 @@ class ImageElement {
 
     // Hook up event handlers on sprite asset
     _bindSprite(sprite) {
-        sprite.on('set:meshes', this._onSpriteMeshesChange, this);
+        this._evtSetMeshes = sprite.on('set:meshes', this._onSpriteMeshesChange, this);
         sprite.on('set:pixelsPerUnit', this._onSpritePpuChange, this);
         sprite.on('set:atlas', this._onAtlasTextureChange, this);
         if (sprite.atlas) {
@@ -773,7 +826,8 @@ class ImageElement {
     }
 
     _unbindSprite(sprite) {
-        sprite.off('set:meshes', this._onSpriteMeshesChange, this);
+        this._evtSetMeshes?.off();
+        this._evtSetMeshes = null;
         sprite.off('set:pixelsPerUnit', this._onSpritePpuChange, this);
         sprite.off('set:atlas', this._onAtlasTextureChange, this);
         if (sprite.atlas) {
@@ -813,7 +867,7 @@ class ImageElement {
 
     // When atlas is loaded try to reset the sprite asset
     _onTextureAtlasLoad(atlasAsset) {
-        var spriteAsset = this._spriteAsset;
+        const spriteAsset = this._spriteAsset;
         if (spriteAsset instanceof Asset) {
             // TODO: _spriteAsset should never be an asset instance?
             this._onSpriteAssetLoad(spriteAsset);
@@ -823,21 +877,20 @@ class ImageElement {
     }
 
     onEnable() {
-        var asset;
         if (this._materialAsset) {
-            asset = this._system.app.assets.get(this._materialAsset);
+            const asset = this._system.app.assets.get(this._materialAsset);
             if (asset && asset.resource !== this._material) {
                 this._bindMaterialAsset(asset);
             }
         }
         if (this._textureAsset) {
-            asset = this._system.app.assets.get(this._textureAsset);
+            const asset = this._system.app.assets.get(this._textureAsset);
             if (asset && asset.resource !== this._texture) {
                 this._bindTextureAsset(asset);
             }
         }
         if (this._spriteAsset) {
-            asset = this._system.app.assets.get(this._spriteAsset);
+            const asset = this._system.app.assets.get(this._spriteAsset);
             if (asset && asset.resource !== this._sprite) {
                 this._bindSpriteAsset(asset);
             }
@@ -854,12 +907,12 @@ class ImageElement {
         this._renderable.meshInstance.stencilFront = stencilParams;
         this._renderable.meshInstance.stencilBack = stencilParams;
 
-        var ref = 0;
+        let ref = 0;
         if (this._element.maskedBy) {
             ref = this._element.maskedBy.element._image._maskRef;
         }
         if (this._renderable.unmaskMeshInstance) {
-            var sp = new StencilParameters({
+            const sp = new StencilParameters({
                 ref: ref + 1,
                 func: FUNC_EQUAL,
                 zpass: STENCILOP_DECREMENT
@@ -870,36 +923,50 @@ class ImageElement {
         }
     }
 
+    _updateRenderableEmissive() {
+        // color uniforms are in linear space
+        _tempColor.linear(this._color);
+        this._colorUniform[0] = _tempColor.r;
+        this._colorUniform[1] = _tempColor.g;
+        this._colorUniform[2] = _tempColor.b;
+        this._renderable.setParameter('material_emissive', this._colorUniform);
+    }
+
+    set color(value) {
+
+        // #if _DEBUG
+        if (this._color === value) {
+            Debug.warn('Setting element.color to itself will have no effect');
+        }
+        // #endif
+
+        const { r, g, b } = value;
+
+        if (this._color.r !== r || this._color.g !== g || this._color.b !== b) {
+            this._color.r = r;
+            this._color.g = g;
+            this._color.b = b;
+
+            this._updateRenderableEmissive();
+        }
+
+        if (this._element) {
+            this._element.fire('set:color', this._color);
+        }
+    }
+
     get color() {
         return this._color;
     }
 
-    set color(value) {
-        var r = value.r;
-        var g = value.g;
-        var b = value.b;
-
-        // #ifdef DEBUG
-        if (this._color === value) {
-            console.warn("Setting element.color to itself will have no effect");
+    set opacity(value) {
+        if (value !== this._color.a) {
+            this._color.a = value;
+            this._renderable.setParameter('material_opacity', value);
         }
-        // #endif
-
-        if (this._color.r === r && this._color.g === g && this._color.b === b) {
-            return;
-        }
-
-        this._color.r = r;
-        this._color.g = g;
-        this._color.b = b;
-
-        this._colorUniform[0] = r;
-        this._colorUniform[1] = g;
-        this._colorUniform[2] = b;
-        this._renderable.setParameter('material_emissive', this._colorUniform);
 
         if (this._element) {
-            this._element.fire('set:color', this._color);
+            this._element.fire('set:opacity', value);
         }
     }
 
@@ -907,30 +974,14 @@ class ImageElement {
         return this._color.a;
     }
 
-    set opacity(value) {
-        if (value === this._color.a) return;
-
-        this._color.a = value;
-
-        this._renderable.setParameter('material_opacity', value);
-
-        if (this._element) {
-            this._element.fire('set:opacity', value);
-        }
-    }
-
-    get rect() {
-        return this._rect;
-    }
-
     set rect(value) {
-        // #ifdef DEBUG
+        // #if _DEBUG
         if (this._rect === value) {
             console.warn('Setting element.rect to itself will have no effect');
         }
         // #endif
 
-        var x, y, z, w;
+        let x, y, z, w;
         if (value instanceof Vec4) {
             x = value.x;
             y = value.y;
@@ -954,7 +1005,7 @@ class ImageElement {
         this._rect.set(x, y, z, w);
 
         if (this._renderable.mesh) {
-            if (! this._element._beingInitialized) {
+            if (!this._element._beingInitialized) {
                 this._updateMesh(this._renderable.mesh);
             } else {
                 this._meshDirty = true;
@@ -962,15 +1013,28 @@ class ImageElement {
         }
     }
 
-    get material() {
-        return this._material;
+    get rect() {
+        return this._rect;
+    }
+
+    _removeMaterialAssetEvents() {
+        if (this._materialAsset) {
+            const assets = this._system.app.assets;
+            assets.off(`add:${this._materialAsset}`, this._onMaterialAdded, this);
+            const asset = assets.get(this._materialAsset);
+            if (asset) {
+                asset.off('load', this._onMaterialLoad, this);
+                asset.off('change', this._onMaterialChange, this);
+                asset.off('remove', this._onMaterialRemove, this);
+            }
+        }
     }
 
     set material(value) {
         if (this._material === value) return;
 
         if (!value) {
-            var screenSpace = this._element._isScreenSpace();
+            const screenSpace = this._element._isScreenSpace();
             if (this.mask) {
                 value = screenSpace ? this._system.defaultScreenSpaceImageMaskMaterial : this._system.defaultImageMaskMaterial;
             } else {
@@ -979,6 +1043,16 @@ class ImageElement {
         }
 
         this._material = value;
+
+        // Remove material asset if changed
+        if (this._materialAsset) {
+            const asset = this._system.app.assets.get(this._materialAsset);
+            if (!asset || asset.resource !== value) {
+                this._removeMaterialAssetEvents();
+                this._materialAsset = null;
+            }
+        }
+
         if (value) {
             this._renderable.setMaterial(value);
 
@@ -988,11 +1062,44 @@ class ImageElement {
                 this._renderable.deleteParameter('material_emissive');
             } else {
                 // otherwise if we are back to the defaults reset the color and opacity
-                this._colorUniform[0] = this._color.r;
-                this._colorUniform[1] = this._color.g;
-                this._colorUniform[2] = this._color.b;
-                this._renderable.setParameter('material_emissive', this._colorUniform);
+                this._updateRenderableEmissive();
                 this._renderable.setParameter('material_opacity', this._color.a);
+            }
+        }
+    }
+
+    get material() {
+        return this._material;
+    }
+
+    set materialAsset(value) {
+        const assets = this._system.app.assets;
+        let _id = value;
+
+        if (value instanceof Asset) {
+            _id = value.id;
+        }
+
+        if (this._materialAsset !== _id) {
+            this._removeMaterialAssetEvents();
+
+            this._materialAsset = _id;
+            if (this._materialAsset) {
+                const asset = assets.get(this._materialAsset);
+                if (!asset) {
+                    this._materialAsset = null;
+                    this.material = null;
+
+                    this._materialAsset = _id;
+                    assets.on(`add:${this._materialAsset}`, this._onMaterialAdded, this);
+                } else {
+                    this._bindMaterialAsset(asset);
+                }
+            } else {
+                this._materialAsset = null;
+                this.material = null;
+
+                this._materialAsset = _id;
             }
         }
     }
@@ -1001,49 +1108,11 @@ class ImageElement {
         return this._materialAsset;
     }
 
-    set materialAsset(value) {
-        var assets = this._system.app.assets;
-        var _id = value;
-
-        if (value instanceof Asset) {
-            _id = value.id;
-        }
-
-        if (this._materialAsset !== _id) {
-            if (this._materialAsset) {
-                assets.off('add:' + this._materialAsset, this._onMaterialAdded, this);
-                var _prev = assets.get(this._materialAsset);
-                if (_prev) {
-                    _prev.off("load", this._onMaterialLoad, this);
-                    _prev.off("change", this._onMaterialChange, this);
-                    _prev.off("remove", this._onMaterialRemove, this);
-                }
-            }
-
-            this._materialAsset = _id;
-            if (this._materialAsset) {
-                var asset = assets.get(this._materialAsset);
-                if (!asset) {
-                    this.material = null;
-                    assets.on('add:' + this._materialAsset, this._onMaterialAdded, this);
-                } else {
-                    this._bindMaterialAsset(asset);
-                }
-            } else {
-                this.material = null;
-            }
-        }
-    }
-
-    get texture() {
-        return this._texture;
-    }
-
     set texture(value) {
         if (this._texture === value) return;
 
         if (this._textureAsset) {
-            var textureAsset = this._system.app.assets.get(this._textureAsset);
+            const textureAsset = this._system.app.assets.get(this._textureAsset);
             if (textureAsset && textureAsset.resource !== value) {
                 this.textureAsset = null;
             }
@@ -1059,27 +1128,41 @@ class ImageElement {
             }
 
             // default texture just uses emissive and opacity maps
-            this._renderable.setParameter("texture_emissiveMap", this._texture);
-            this._renderable.setParameter("texture_opacityMap", this._texture);
-            this._colorUniform[0] = this._color.r;
-            this._colorUniform[1] = this._color.g;
-            this._colorUniform[2] = this._color.b;
-            this._renderable.setParameter("material_emissive", this._colorUniform);
-            this._renderable.setParameter("material_opacity", this._color.a);
+            this._renderable.setParameter('texture_emissiveMap', this._texture);
+            this._renderable.setParameter('texture_opacityMap', this._texture);
+            this._updateRenderableEmissive();
+            this._renderable.setParameter('material_opacity', this._color.a);
+
+            // if texture's aspect ratio changed and the element needs to preserve aspect ratio, refresh the mesh
+            const newAspectRatio = this._texture.width / this._texture.height;
+            if (newAspectRatio !== this._targetAspectRatio) {
+                this._targetAspectRatio = newAspectRatio;
+                if (this._element.fitMode !== FITMODE_STRETCH) {
+                    this.refreshMesh();
+                }
+            }
         } else {
             // clear texture params
-            this._renderable.deleteParameter("texture_emissiveMap");
-            this._renderable.deleteParameter("texture_opacityMap");
+            this._renderable.deleteParameter('texture_emissiveMap');
+            this._renderable.deleteParameter('texture_opacityMap');
+
+            // reset target aspect ratio and refresh mesh if there is an aspect ratio setting
+            // this is needed in order to properly reset the mesh to 'stretch' across the entire element bounds
+            // when resetting the texture
+            this._targetAspectRatio = -1;
+            if (this._element.fitMode !== FITMODE_STRETCH) {
+                this.refreshMesh();
+            }
         }
     }
 
-    get textureAsset() {
-        return this._textureAsset;
+    get texture() {
+        return this._texture;
     }
 
     set textureAsset(value) {
-        var assets = this._system.app.assets;
-        var _id = value;
+        const assets = this._system.app.assets;
+        let _id = value;
 
         if (value instanceof Asset) {
             _id = value.id;
@@ -1087,21 +1170,21 @@ class ImageElement {
 
         if (this._textureAsset !== _id) {
             if (this._textureAsset) {
-                assets.off('add:' + this._textureAsset, this._onTextureAdded, this);
-                var _prev = assets.get(this._textureAsset);
+                assets.off(`add:${this._textureAsset}`, this._onTextureAdded, this);
+                const _prev = assets.get(this._textureAsset);
                 if (_prev) {
-                    _prev.off("load", this._onTextureLoad, this);
-                    _prev.off("change", this._onTextureChange, this);
-                    _prev.off("remove", this._onTextureRemove, this);
+                    _prev.off('load', this._onTextureLoad, this);
+                    _prev.off('change', this._onTextureChange, this);
+                    _prev.off('remove', this._onTextureRemove, this);
                 }
             }
 
             this._textureAsset = _id;
             if (this._textureAsset) {
-                var asset = assets.get(this._textureAsset);
+                const asset = assets.get(this._textureAsset);
                 if (!asset) {
                     this.texture = null;
-                    assets.on('add:' + this._textureAsset, this._onTextureAdded, this);
+                    assets.on(`add:${this._textureAsset}`, this._onTextureAdded, this);
                 } else {
                     this._bindTextureAsset(asset);
                 }
@@ -1111,13 +1194,13 @@ class ImageElement {
         }
     }
 
-    get spriteAsset() {
-        return this._spriteAsset;
+    get textureAsset() {
+        return this._textureAsset;
     }
 
     set spriteAsset(value) {
-        var assets = this._system.app.assets;
-        var _id = value;
+        const assets = this._system.app.assets;
+        let _id = value;
 
         if (value instanceof Asset) {
             _id = value.id;
@@ -1125,8 +1208,8 @@ class ImageElement {
 
         if (this._spriteAsset !== _id) {
             if (this._spriteAsset) {
-                assets.off('add:' + this._spriteAsset, this._onSpriteAssetAdded, this);
-                var _prev = assets.get(this._spriteAsset);
+                assets.off(`add:${this._spriteAsset}`, this._onSpriteAssetAdded, this);
+                const _prev = assets.get(this._spriteAsset);
                 if (_prev) {
                     this._unbindSpriteAsset(_prev);
                 }
@@ -1134,25 +1217,25 @@ class ImageElement {
 
             this._spriteAsset = _id;
             if (this._spriteAsset) {
-                var asset = assets.get(this._spriteAsset);
+                const asset = assets.get(this._spriteAsset);
                 if (!asset) {
                     this.sprite = null;
-                    assets.on('add:' + this._spriteAsset, this._onSpriteAssetAdded, this);
+                    assets.on(`add:${this._spriteAsset}`, this._onSpriteAssetAdded, this);
                 } else {
                     this._bindSpriteAsset(asset);
                 }
             } else {
                 this.sprite = null;
             }
+        }
 
-            if (this._element) {
-                this._element.fire('set:spriteAsset', _id);
-            }
+        if (this._element) {
+            this._element.fire('set:spriteAsset', _id);
         }
     }
 
-    get sprite() {
-        return this._sprite;
+    get spriteAsset() {
+        return this._spriteAsset;
     }
 
     set sprite(value) {
@@ -1163,7 +1246,7 @@ class ImageElement {
         }
 
         if (this._spriteAsset) {
-            var spriteAsset = this._system.app.assets.get(this._spriteAsset);
+            const spriteAsset = this._system.app.assets.get(this._spriteAsset);
             if (spriteAsset && spriteAsset.resource !== value) {
                 this.spriteAsset = null;
             }
@@ -1182,12 +1265,12 @@ class ImageElement {
 
         if (this._sprite && this._sprite.atlas && this._sprite.atlas.texture) {
             // default texture just uses emissive and opacity maps
-            this._renderable.setParameter("texture_emissiveMap", this._sprite.atlas.texture);
-            this._renderable.setParameter("texture_opacityMap", this._sprite.atlas.texture);
+            this._renderable.setParameter('texture_emissiveMap', this._sprite.atlas.texture);
+            this._renderable.setParameter('texture_opacityMap', this._sprite.atlas.texture);
         } else {
             // clear texture params
-            this._renderable.deleteParameter("texture_emissiveMap");
-            this._renderable.deleteParameter("texture_opacityMap");
+            this._renderable.deleteParameter('texture_emissiveMap');
+            this._renderable.deleteParameter('texture_opacityMap');
         }
 
         // clamp frame
@@ -1198,12 +1281,12 @@ class ImageElement {
         this._updateSprite();
     }
 
-    get spriteFrame() {
-        return this._spriteFrame;
+    get sprite() {
+        return this._sprite;
     }
 
     set spriteFrame(value) {
-        var oldValue = this._spriteFrame;
+        const oldValue = this._spriteFrame;
 
         if (this._sprite) {
             // clamp frame
@@ -1212,17 +1295,17 @@ class ImageElement {
             this._spriteFrame = value;
         }
 
-        if (this._spriteFrame === oldValue) return;
-
-        this._updateSprite();
+        if (this._spriteFrame !== oldValue) {
+            this._updateSprite();
+        }
 
         if (this._element) {
             this._element.fire('set:spriteFrame', value);
         }
     }
 
-    get mesh() {
-        return this._renderable.mesh;
+    get spriteFrame() {
+        return this._spriteFrame;
     }
 
     set mesh(value) {
@@ -1234,8 +1317,8 @@ class ImageElement {
         }
     }
 
-    get mask() {
-        return this._mask;
+    get mesh() {
+        return this._renderable.mesh;
     }
 
     set mask(value) {
@@ -1245,8 +1328,8 @@ class ImageElement {
         }
     }
 
-    get pixelsPerUnit() {
-        return this._pixelsPerUnit;
+    get mask() {
+        return this._mask;
     }
 
     set pixelsPerUnit(value) {
@@ -1259,7 +1342,14 @@ class ImageElement {
 
     }
 
+    get pixelsPerUnit() {
+        return this._pixelsPerUnit;
+    }
+
     // private
+    /**
+     * @type {BoundingBox | null}
+     */
     get aabb() {
         if (this._renderable.meshInstance) {
             return this._renderable.meshInstance.aabb;

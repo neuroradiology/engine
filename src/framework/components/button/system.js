@@ -1,13 +1,14 @@
-import { Component } from '../component.js';
 import { ComponentSystem } from '../system.js';
-
 import { ButtonComponent } from './component.js';
 import { ButtonComponentData } from './data.js';
+
+/**
+ * @import { AppBase } from '../../app-base.js'
+ */
 
 const _schema = [
     'enabled',
     'active',
-    { name: 'imageEntity', type: 'entity' },
     { name: 'hitPadding', type: 'vec4' },
     'transitionMode',
     { name: 'hoverTint', type: 'rgba' },
@@ -23,14 +24,17 @@ const _schema = [
 ];
 
 /**
- * @class
- * @name pc.ButtonComponentSystem
- * @augments pc.ComponentSystem
- * @classdesc Manages creation of {@link pc.ButtonComponent}s.
- * @description Create a new ButtonComponentSystem.
- * @param {pc.Application} app - The application.
+ * Manages creation of {@link ButtonComponent}s.
+ *
+ * @category User Interface
  */
 class ButtonComponentSystem extends ComponentSystem {
+    /**
+     * Create a new ButtonComponentSystem.
+     *
+     * @param {AppBase} app - The application.
+     * @ignore
+     */
     constructor(app) {
         super(app);
 
@@ -43,19 +47,20 @@ class ButtonComponentSystem extends ComponentSystem {
 
         this.on('beforeremove', this._onRemoveComponent, this);
 
-        ComponentSystem.bind('update', this.onUpdate, this);
+        this.app.systems.on('update', this.onUpdate, this);
     }
 
     initializeComponentData(component, data, properties) {
+        component.imageEntity = data.imageEntity;
         super.initializeComponentData(component, data, _schema);
     }
 
     onUpdate(dt) {
-        var components = this.store;
+        const components = this.store;
 
-        for (var id in components) {
-            var entity = components[id].entity;
-            var component = entity.button;
+        for (const id in components) {
+            const entity = components[id].entity;
+            const component = entity.button;
             if (component.enabled && entity.enabled) {
                 component.onUpdate();
             }
@@ -65,8 +70,12 @@ class ButtonComponentSystem extends ComponentSystem {
     _onRemoveComponent(entity, component) {
         component.onRemove();
     }
-}
 
-Component._buildAccessors(ButtonComponent.prototype, _schema);
+    destroy() {
+        super.destroy();
+
+        this.app.systems.off('update', this.onUpdate, this);
+    }
+}
 
 export { ButtonComponentSystem };

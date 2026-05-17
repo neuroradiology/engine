@@ -1,77 +1,101 @@
-import { Vec3 } from '../../../math/vec3.js';
-
+import { Vec3 } from '../../../core/math/vec3.js';
 import { Component } from '../component.js';
 
 /**
- * @private
- * @component
- * @class
- * @name pc.ZoneComponent
- * @augments pc.Component
- * @classdesc The ZoneComponent allows you to define an area in world space of certain size.
- * This can be used in various ways, such as affecting audio reverb when audiolistener is within zone.
- * Or create culling system with portals between zones to hide whole indoor sections for performance reasons.
- * And many other possible options. Zones are building blocks and meant to be used in many different ways.
- * @param {pc.ZoneComponentSystem} system - The ComponentSystem that created this Component.
- * @param {pc.Vec3} size - The Size of Box of a Zone.
+ * @import { Entity } from '../../entity.js'
+ * @import { ZoneComponentSystem } from './system.js'
  */
 
+/**
+ * The ZoneComponent enables an {@link Entity} to define a box-shaped area in world space of a
+ * certain size. Zones are a building block that can be used in various ways, such as affecting
+ * audio reverb when an {@link AudioListenerComponent} is within the zone, or creating a culling
+ * system with portals between zones to hide whole indoor sections for performance reasons.
+ *
+ * @ignore
+ */
 class ZoneComponent extends Component {
+    /**
+     * Fired when the zone component is enabled. This event does not take into account the enabled
+     * state of the entity or any of its ancestors.
+     *
+     * @event
+     * @example
+     * entity.zone.on('enable', () => {
+     *     console.log(`Zone component of entity '${entity.name}' has been enabled`);
+     * });
+     */
+    static EVENT_ENABLE = 'enable';
+
+    /**
+     * Fired when the zone component is disabled. This event does not take into account the enabled
+     * state of the entity or any of its ancestors.
+     *
+     * @event
+     * @example
+     * entity.zone.on('disable', () => {
+     *     console.log(`Zone component of entity '${entity.name}' has been disabled`);
+     * });
+     */
+    static EVENT_DISABLE = 'disable';
+
+    /**
+     * Fired when the enabled state of the zone component changes. This event does not take into
+     * account the enabled state of the entity or any of its ancestors.
+     *
+     * @event
+     * @example
+     * entity.zone.on('state', (enabled) => {
+     *     console.log(`Zone component of entity '${entity.name}' has been ${enabled ? 'enabled' : 'disabled'}`);
+     * });
+     */
+    static EVENT_STATE = 'state';
+
+    /**
+     * Fired when a zone component is removed from an entity.
+     *
+     * @event
+     * @example
+     * entity.zone.on('remove', () => {
+     *     console.log(`Zone component removed from entity '${entity.name}'`);
+     * });
+     */
+    static EVENT_REMOVE = 'remove';
+
+    /** @private */
+    _oldState = true;
+
+    /** @private */
+    _size = new Vec3();
+
+    /**
+     * Create a new ZoneComponent instance.
+     *
+     * @param {ZoneComponentSystem} system - The ComponentSystem that created this Component.
+     * @param {Entity} entity - The Entity that this Component is attached to.
+     */
     constructor(system, entity) {
         super(system, entity);
 
-        this._oldState = true;
-        this._size = new Vec3();
         this.on('set_enabled', this._onSetEnabled, this);
     }
 
     /**
-     * @private
-     * @event
-     * @name pc.ZoneComponent#enable
-     * @description Fired when Component becomes enabled
-     * Note: this event does not take in account entity or any of its parent enabled state.
-     * @example
-     * entity.zone.on('enable', function () {
-     *     // component is enabled
-     * });
+     * The size of the axis-aligned box of this ZoneComponent.
+     *
+     * @type {Vec3}
      */
+    set size(data) {
+        if (data instanceof Vec3) {
+            this._size.copy(data);
+        } else if (data instanceof Array && data.length >= 3) {
+            this.size.set(data[0], data[1], data[2]);
+        }
+    }
 
-    /**
-     * @private
-     * @event
-     * @name pc.ZoneComponent#disable
-     * @description Fired when Component becomes disabled
-     * Note: this event does not take in account entity or any of its parent enabled state.
-     * @example
-     * entity.zone.on('disable', function () {
-     *     // component is disabled
-     * });
-     */
-
-    /**
-     * @private
-     * @event
-     * @name pc.ZoneComponent#state
-     * @description Fired when Component changes state to enabled or disabled
-     * Note: this event does not take in account entity or any of its parent enabled state.
-     * @param {boolean} enabled - True if now enabled, False if disabled.
-     * @example
-     * entity.zone.on('state', function (enabled) {
-     *     // component changed state
-     * });
-     */
-
-    /**
-     * @private
-     * @event
-     * @name pc.ZoneComponent#remove
-     * @description Fired when a zone is removed from an entity.
-     * @example
-     * entity.zone.on('remove', function () {
-     *     // zone has been removed from an entity
-     * });
-     */
+    get size() {
+        return this._size;
+    }
 
     onEnable() {
         this._checkState();
@@ -86,9 +110,10 @@ class ZoneComponent extends Component {
     }
 
     _checkState() {
-        var state = this.enabled && this.entity.enabled;
-        if (state === this._oldState)
+        const state = this.enabled && this.entity.enabled;
+        if (state === this._oldState) {
             return;
+        }
 
         this._oldState = state;
 
@@ -98,18 +123,6 @@ class ZoneComponent extends Component {
 
     _onBeforeRemove() {
         this.fire('remove');
-    }
-
-    set size(data) {
-        if (data instanceof Vec3) {
-            this._size.copy(data);
-        } else if (data instanceof Array && data.length >= 3) {
-            this.size.set(data[0], data[1], data[2]);
-        }
-    }
-
-    get size() {
-        return this._size;
     }
 }
 

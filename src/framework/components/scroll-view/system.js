@@ -1,8 +1,11 @@
-import { Component } from '../component.js';
+import { Vec2 } from '../../../core/math/vec2.js';
 import { ComponentSystem } from '../system.js';
-
 import { ScrollViewComponent } from './component.js';
 import { ScrollViewComponentData } from './data.js';
+
+/**
+ * @import { AppBase } from '../../app-base.js'
+ */
 
 const _schema = [
     { name: 'enabled', type: 'boolean' },
@@ -12,25 +15,26 @@ const _schema = [
     { name: 'bounceAmount', type: 'number' },
     { name: 'friction', type: 'number' },
     { name: 'dragThreshold', type: 'number' },
+    { name: 'useMouseWheel', type: 'boolean' },
+    { name: 'mouseWheelSensitivity', type: 'vec2' },
     { name: 'horizontalScrollbarVisibility', type: 'number' },
-    { name: 'verticalScrollbarVisibility', type: 'number' },
-    { name: 'viewportEntity', type: 'entity' },
-    { name: 'contentEntity', type: 'entity' },
-    { name: 'horizontalScrollbarEntity', type: 'entity' },
-    { name: 'verticalScrollbarEntity', type: 'entity' }
+    { name: 'verticalScrollbarVisibility', type: 'number' }
 ];
 
 const DEFAULT_DRAG_THRESHOLD = 10;
 
 /**
- * @class
- * @name pc.ScrollViewComponentSystem
- * @augments pc.ComponentSystem
- * @classdesc Manages creation of {@link pc.ScrollViewComponent}s.
- * @description Create a new ScrollViewComponentSystem.
- * @param {pc.Application} app - The application.
+ * Manages creation of {@link ScrollViewComponent}s.
+ *
+ * @category User Interface
  */
 class ScrollViewComponentSystem extends ComponentSystem {
+    /**
+     * Create a new ScrollViewComponentSystem instance.
+     *
+     * @param {AppBase} app - The application.
+     * @ignore
+     */
     constructor(app) {
         super(app);
 
@@ -43,23 +47,34 @@ class ScrollViewComponentSystem extends ComponentSystem {
 
         this.on('beforeremove', this._onRemoveComponent, this);
 
-        ComponentSystem.bind('update', this.onUpdate, this);
+        this.app.systems.on('update', this.onUpdate, this);
     }
 
     initializeComponentData(component, data, properties) {
         if (data.dragThreshold === undefined) {
             data.dragThreshold = DEFAULT_DRAG_THRESHOLD;
         }
+        if (data.useMouseWheel === undefined) {
+            data.useMouseWheel = true;
+        }
+        if (data.mouseWheelSensitivity === undefined) {
+            data.mouseWheelSensitivity = new Vec2(1, 1);
+        }
 
         super.initializeComponentData(component, data, _schema);
+
+        component.viewportEntity = data.viewportEntity;
+        component.contentEntity = data.contentEntity;
+        component.horizontalScrollbarEntity = data.horizontalScrollbarEntity;
+        component.verticalScrollbarEntity = data.verticalScrollbarEntity;
     }
 
     onUpdate(dt) {
-        var components = this.store;
+        const components = this.store;
 
-        for (var id in components) {
-            var entity = components[id].entity;
-            var component = entity.scrollview;
+        for (const id in components) {
+            const entity = components[id].entity;
+            const component = entity.scrollview;
             if (component.enabled && entity.enabled) {
                 component.onUpdate();
             }
@@ -70,8 +85,12 @@ class ScrollViewComponentSystem extends ComponentSystem {
     _onRemoveComponent(entity, component) {
         component.onRemove();
     }
-}
 
-Component._buildAccessors(ScrollViewComponent.prototype, _schema);
+    destroy() {
+        super.destroy();
+
+        this.app.systems.off('update', this.onUpdate, this);
+    }
+}
 
 export { ScrollViewComponentSystem };

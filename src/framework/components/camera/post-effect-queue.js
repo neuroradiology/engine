@@ -1,213 +1,158 @@
-import { now } from '../../../core/time.js';
+import { PIXELFORMAT_RGBA16F, PIXELFORMAT_RGBA32F, PIXELFORMAT_RGBA8, PIXELFORMAT_SRGBA8 } from '../../../platform/graphics/constants.js';
+import { DebugGraphics } from '../../../platform/graphics/debug-graphics.js';
+import { RenderTarget } from '../../../platform/graphics/render-target.js';
+import { Texture } from '../../../platform/graphics/texture.js';
+import { LAYERID_DEPTH } from '../../../scene/constants.js';
 
-import { ADDRESS_CLAMP_TO_EDGE, FILTER_NEAREST, PIXELFORMAT_R8_G8_B8_A8 } from '../../../graphics/constants.js';
-import { RenderTarget } from '../../../graphics/render-target.js';
-import { Texture } from '../../../graphics/texture.js';
-
-import { LAYERID_DEPTH, LAYERID_UI, SORTMODE_NONE } from '../../../scene/constants.js';
-import { Layer } from '../../../scene/layer.js';
-
-var depthLayer;
 /**
- * @class
- * @name pc.PostEffectQueue
- * @classdesc Used to manage multiple post effects for a camera.
- * @description Create a new PostEffectQueue.
- * @param {pc.Application} app - The application.
- * @param {pc.CameraComponent} camera - The camera component.
+ * @import { AppBase } from '../../app-base.js'
+ * @import { CameraComponent } from './component.js'
+ * @import { PostEffect } from '../../../scene/graphics/post-effect.js'
+ */
+
+class PostEffectEntry {
+    constructor(effect, inputTarget) {
+        this.effect = effect;
+        this.inputTarget = inputTarget;
+        this.outputTarget = null;
+        this.name = effect.constructor.name;
+    }
+}
+
+/**
+ * Used to manage multiple post effects for a camera.
+ *
+ * @category Graphics
  */
 class PostEffectQueue {
+    /**
+     * Create a new PostEffectQueue instance.
+     *
+     * @param {AppBase} app - The application.
+     * @param {CameraComponent} camera - The camera component.
+     */
     constructor(app, camera) {
-        var self = this;
-
         this.app = app;
         this.camera = camera;
-        // stores all of the post effects
+
+        /**
+         * Render target where the postprocessed image needs to be rendered to. Defaults to null
+         * which is main framebuffer.
+         *
+         * @type {RenderTarget}
+         * @ignore
+         */
+        this.destinationRenderTarget = null;
+
+        /**
+         * All of the post effects in the queue.
+         *
+         * @type {PostEffectEntry[]}
+         * @ignore
+         */
         this.effects = [];
-        // if the queue is enabled it will render all of its effects
-        // otherwise it will not render anything
+
+        /**
+         * If the queue is enabled it will render all of its effects, otherwise it will not render
+         * anything.
+         *
+         * @ignore
+         */
         this.enabled = false;
 
         // legacy
         this.depthTarget = null;
 
-        this.renderTargetScale = 1;
-        this.resizeTimeout = null;
-        this.resizeLast = 0;
-
-        this._resizeTimeoutCallback = function () {
-            self.resizeRenderTargets();
-        };
-
-        camera.on('set_rect', this.onCameraRectChanged, this);
-
-        this._origOverrideClear = false;
-        this._origClearColorBuffer = false;
-        this._origDepthColorBuffer = false;
-        this._origStencilColorBuffer = false;
+        camera.on('set:rect', this.onCameraRectChanged, this);
     }
 
     /**
+     * Allocate a color buffer texture.
+     *
+     * @param {number} format - The format of the color buffer.
+     * @param {string} name - The name of the color buffer.
+     * @returns {Texture} The color buffer texture.
      * @private
-     * @function
-     * @name pc.PostEffectQueue#_createOffscreenTarget
-     * @description Creates a render target with the dimensions of the canvas, with an optional depth buffer.
-     * @param {boolean} useDepth - Set to true if you want to create a render target with a depth buffer.
-     * @param {boolean} hdr - Use HDR render target format.
-     * @returns {pc.RenderTarget} The render target.
      */
+    _allocateColorBuffer(format, name) {
+        const rect = this.camera.rect;
+        const renderTarget = this.destinationRenderTarget;
+        const device = this.app.graphicsDevice;
 
+        const width = Math.floor(rect.z * (renderTarget?.width ?? device.width));
+        const height = Math.floor(rect.w * (renderTarget?.height ?? device.height));
+
+        const colorBuffer = Texture.createDataTexture2D(device, name, width, height, format);
+
+        return colorBuffer;
+    }
+
+    /**
+     * Creates a render target with the dimensions of the canvas, with an optional depth buffer.
+     *
+     * @param {boolean} useDepth - Set to true to create a render target with a depth buffer.
+     * @param {boolean} hdr - Use HDR render target format.
+     * @returns {RenderTarget} The render target.
+     * @private
+     */
     _createOffscreenTarget(useDepth, hdr) {
-        var rect = this.camera.rect;
 
-        var width = Math.floor(rect.z * this.app.graphicsDevice.width * this.renderTargetScale);
-        var height = Math.floor(rect.w * this.app.graphicsDevice.height * this.renderTargetScale);
+        const device = this.app.graphicsDevice;
 
-        var device = this.app.graphicsDevice;
-        var format = hdr ? device.getHdrFormat() : PIXELFORMAT_R8_G8_B8_A8;
-        var useStencil =  this.app.graphicsDevice.supportsStencil;
-        var samples = useDepth ? device.samples : 1;
+        // use srgb LDR format if backbuffer is srgb
+        const outputRt = this.destinationRenderTarget ?? device.backBuffer;
+        const srgb = outputRt.isColorBufferSrgb(0);
 
-        var colorBuffer = new Texture(device, {
-            format: format,
-            width: width,
-            height: height
+        const format = (hdr && device.getRenderableHdrFormat([PIXELFORMAT_RGBA16F, PIXELFORMAT_RGBA32F], true)) ??
+            (srgb ? PIXELFORMAT_SRGBA8 : PIXELFORMAT_RGBA8);
+        const name = `${this.camera.entity.name}-posteffect-${this.effects.length}`;
+
+        const colorBuffer = this._allocateColorBuffer(format, name);
+
+        return new RenderTarget({
+            colorBuffer: colorBuffer,
+            depth: useDepth,
+            stencil: useDepth && this.app.graphicsDevice.supportsStencil,
+            samples: useDepth ? device.samples : 1
         });
-        colorBuffer.name = 'posteffect #' + this.effects.length;
-
-        colorBuffer.minFilter = FILTER_NEAREST;
-        colorBuffer.magFilter = FILTER_NEAREST;
-        colorBuffer.addressU = ADDRESS_CLAMP_TO_EDGE;
-        colorBuffer.addressV = ADDRESS_CLAMP_TO_EDGE;
-
-        return new RenderTarget(this.app.graphicsDevice, colorBuffer, { depth: useDepth, stencil: useStencil, samples: samples });
     }
 
     _resizeOffscreenTarget(rt) {
-        var rect = this.camera.rect;
+        const format = rt.colorBuffer.format;
+        const name = rt.colorBuffer.name;
 
-        var width = Math.floor(rect.z * this.app.graphicsDevice.width * this.renderTargetScale);
-        var height = Math.floor(rect.w * this.app.graphicsDevice.height * this.renderTargetScale);
-
-        var device = this.app.graphicsDevice;
-        var format = rt.colorBuffer.format;
-
-        rt._colorBuffer.destroy();
-
-        var colorBuffer = new Texture(device, {
-            format: format,
-            width: width,
-            height: height
-        });
-        colorBuffer.name = 'posteffect';
-
-        colorBuffer.minFilter = FILTER_NEAREST;
-        colorBuffer.magFilter = FILTER_NEAREST;
-        colorBuffer.addressU = ADDRESS_CLAMP_TO_EDGE;
-        colorBuffer.addressV = ADDRESS_CLAMP_TO_EDGE;
-
-        rt._colorBuffer = colorBuffer;
-        rt.destroy();
+        rt.destroyFrameBuffers();
+        rt.destroyTextureBuffers();
+        rt._colorBuffer = this._allocateColorBuffer(format, name);
+        rt._colorBuffers = [rt._colorBuffer];
+        rt.evaluateDimensions();
     }
 
     _destroyOffscreenTarget(rt) {
-        if (rt._colorBuffer)
-            rt._colorBuffer.destroy();
-        if (rt._depthBuffer)
-            rt._depthBuffer.destroy();
-
+        rt.destroyTextureBuffers();
         rt.destroy();
     }
 
-    setRenderTargetScale(scale) {
-        this.renderTargetScale = scale;
-        this.resizeRenderTargets();
-    }
-
     /**
-     * @function
-     * @name pc.PostEffectQueue#addEffect
-     * @description Adds a post effect to the queue. If the queue is disabled adding a post effect will
+     * Adds a post effect to the queue. If the queue is disabled adding a post effect will
      * automatically enable the queue.
-     * @param {pc.PostEffect} effect - The post effect to add to the queue.
+     *
+     * @param {PostEffect} effect - The post effect to add to the queue.
      */
     addEffect(effect) {
         // first rendering of the scene requires depth buffer
-        var isFirstEffect = this.effects.length === 0;
+        const effects = this.effects;
+        const isFirstEffect = effects.length === 0;
 
-        var effects = this.effects;
-        var newEntry = {
-            effect: effect,
-            inputTarget: this._createOffscreenTarget(isFirstEffect, effect.hdr),
-            outputTarget: null
-        };
-
-        // legacy compatibility: create new layer
-        if (!this.layer) {
-            this.layer = new Layer({
-                opaqueSortMode: SORTMODE_NONE,
-                transparentSortMode: SORTMODE_NONE,
-                passThrough: true,
-                name: "PostEffectQueue",
-                renderTarget: this.camera.renderTarget,
-                clear: false,
-                onPostRender: function () {
-                    for (var i = 0; i < this._commandList.length; i++) {
-                        this._commandList[i]();
-                    }
-                }
-            });
-            // insert it after the last occurrence of this camera
-            var layerList = this.app.scene.layers.layerList;
-            var order = 0;
-            var i;
-            var start = layerList.length - 1;
-            for (i = start; i >= 0; i--) {
-                if (layerList[i].id === LAYERID_UI) {
-                    start = i - 1;
-
-                    this._origOverrideClear = layerList[i].overrideClear;
-                    this._origClearColorBuffer = layerList[i].clearColorBuffer;
-                    this._origDepthColorBuffer = layerList[i].clearDepthBuffer;
-                    this._origStencilColorBuffer = layerList[i].clearStencilBuffer;
-
-                    layerList[i].overrideClear = true;
-                    layerList[i].clearColorBuffer = false;
-                    layerList[i].clearDepthBuffer = this.camera.clearDepthBuffer;
-                    layerList[i].clearStencilBuffer = this.camera.clearStencilBuffer;
-                    break;
-                }
-            }
-
-            this._sourceLayers = [];
-
-            for (i = 0; i < this.camera.layers.length; i++) {
-                var layerID = this.camera.layers[i];
-                var layer = this.app.scene.layers.getLayerById(layerID);
-                var index = this.app.scene.layers.layerList.indexOf(layer);
-
-                if (index <= start) {
-                    if (layerID != LAYERID_DEPTH) {
-                        layer.renderTarget = newEntry.inputTarget;
-                        this._sourceLayers.push(layer);
-                    }
-
-                    if (index > order)
-                        order = index;
-                }
-            }
-            this.app.scene.layers.insertOpaque(this.layer, order + 1);
-            this._sourceTarget = newEntry.inputTarget;
-            this.layer._commandList = [];
-            this.layer.isPostEffect = true;
-        }
-
+        const inputTarget = this._createOffscreenTarget(isFirstEffect, effect.hdr);
+        const newEntry = new PostEffectEntry(effect, inputTarget);
         effects.push(newEntry);
 
-        var len = effects.length;
-        if (len > 1) {
-            // connect the effect with the previous effect if one exists
-            effects[len - 2].outputTarget = newEntry.inputTarget;
+        this._sourceTarget = newEntry.inputTarget;
+
+        // connect the effect with the previous effect if one exists
+        if (effects.length > 1) {
+            effects[effects.length - 2].outputTarget = newEntry.inputTarget;
         }
 
         // Request depthmap if needed
@@ -216,21 +161,21 @@ class PostEffectQueue {
             this._requestDepthMap();
         }
 
-
         this.enable();
         this._newPostEffect = undefined;
     }
 
     /**
-     * @function
-     * @name pc.PostEffectQueue#removeEffect
-     * @description Removes a post effect from the queue. If the queue becomes empty it will be disabled automatically.
-     * @param {pc.PostEffect} effect - The post effect to remove.
+     * Removes a post effect from the queue. If the queue becomes empty it will be disabled
+     * automatically.
+     *
+     * @param {PostEffect} effect - The post effect to remove.
      */
     removeEffect(effect) {
+
         // find index of effect
-        var i, len, index = -1;
-        for (i = 0, len = this.effects.length; i < len; i++) {
+        let index = -1;
+        for (let i = 0, len = this.effects.length; i < len; i++) {
             if (this.effects[i].effect === effect) {
                 index = i;
                 break;
@@ -253,11 +198,8 @@ class PostEffectQueue {
                         this.effects[1].inputTarget = this._createOffscreenTarget(true, this.effects[1].hdr);
                         this._sourceTarget = this.effects[1].inputTarget;
                     }
-                    // Also apply to the source layers
-                    for (i = 0; i < this._sourceLayers.length; i++) {
-                        this._sourceLayers[i].renderTarget = this.effects[1].inputTarget;
-                    }
 
+                    this.camera.renderTarget = this.effects[1].inputTarget;
                 }
             }
 
@@ -279,10 +221,11 @@ class PostEffectQueue {
     }
 
     _requestDepthMaps() {
-        for (var i = 0, len = this.effects.length; i < len; i++) {
-            var effect = this.effects[i].effect;
-            if (this._newPostEffect === effect)
+        for (let i = 0, len = this.effects.length; i < len; i++) {
+            const effect = this.effects[i].effect;
+            if (this._newPostEffect === effect) {
                 continue;
+            }
 
             if (effect.needsDepthBuffer) {
                 this._requestDepthMap();
@@ -291,8 +234,8 @@ class PostEffectQueue {
     }
 
     _releaseDepthMaps() {
-        for (var i = 0, len = this.effects.length; i < len; i++) {
-            var effect = this.effects[i].effect;
+        for (let i = 0, len = this.effects.length; i < len; i++) {
+            const effect = this.effects[i].effect;
             if (effect.needsDepthBuffer) {
                 this._releaseDepthMap();
             }
@@ -300,22 +243,27 @@ class PostEffectQueue {
     }
 
     _requestDepthMap() {
-        if (!depthLayer) depthLayer = this.app.scene.layers.getLayerById(LAYERID_DEPTH);
-        if (depthLayer) depthLayer.incrementCounter();
+        const depthLayer = this.app.scene.layers.getLayerById(LAYERID_DEPTH);
+        if (depthLayer) {
+            depthLayer.incrementCounter();
+            this.camera.requestSceneDepthMap(true);
+        }
     }
 
     _releaseDepthMap() {
-        if (depthLayer) depthLayer.decrementCounter();
+        const depthLayer = this.app.scene.layers.getLayerById(LAYERID_DEPTH);
+        if (depthLayer) {
+            depthLayer.decrementCounter();
+            this.camera.requestSceneDepthMap(false);
+        }
     }
 
     /**
-     * @function
-     * @name pc.PostEffectQueue#destroy
-     * @description Removes all the effects from the queue and disables it.
+     * Removes all the effects from the queue and disables it.
      */
     destroy() {
         // release memory for all effects
-        for (var i = 0, len = this.effects.length; i < len; i++) {
+        for (let i = 0, len = this.effects.length; i < len; i++) {
             this.effects[i].inputTarget.destroy();
         }
 
@@ -325,53 +273,58 @@ class PostEffectQueue {
     }
 
     /**
-     * @function
-     * @name pc.PostEffectQueue#enable
-     * @description Enables the queue and all of its effects. If there are no effects then the queue will not be enabled.
+     * Enables the queue and all of its effects. If there are no effects then the queue will not be
+     * enabled.
      */
     enable() {
         if (!this.enabled && this.effects.length) {
             this.enabled = true;
 
-            var self = this;
             this._requestDepthMaps();
 
             this.app.graphicsDevice.on('resizecanvas', this._onCanvasResized, this);
 
-            // set the camera's rect to full screen. Set it directly to the
-            // camera node instead of the component because we want to keep the old
-            // rect set in the component for restoring the camera to its original settings
-            // when the queue is disabled.
-            // self.camera.camera.setRect(0, 0, 1, 1);
+            // original camera's render target is where the final output needs to go
+            this.destinationRenderTarget = this.camera.renderTarget;
 
-            // create a new command that renders all of the effects one after the other
-            this.command = function () {
-                if (self.enabled) {
-                    var rect = null;
-                    var len = self.effects.length;
+            // camera renders to the first effect's render target
+            this.camera.renderTarget = this.effects[0].inputTarget;
+
+            // callback when postprocessing takes place
+            this.camera.onPostprocessing = () => {
+
+                if (this.enabled) {
+                    let rect = null;
+                    const len = this.effects.length;
                     if (len) {
-                        self.layer.renderTarget = self.effects[0].inputTarget;
 
-                        for (var i = 0; i < len; i++) {
-                            var fx = self.effects[i];
+                        for (let i = 0; i < len; i++) {
+                            const fx = this.effects[i];
 
+                            let destTarget = fx.outputTarget;
+
+                            // last effect
                             if (i === len - 1) {
-                                rect = self.camera.rect;
+                                rect = this.camera.rect;
+
+                                // if camera originally rendered to a render target, render last effect to it
+                                if (this.destinationRenderTarget) {
+                                    destTarget = this.destinationRenderTarget;
+                                }
                             }
-                            fx.effect.render(fx.inputTarget, fx.outputTarget, rect);
+
+                            DebugGraphics.pushGpuMarker(this.app.graphicsDevice, fx.name);
+                            fx.effect.render(fx.inputTarget, destTarget, rect);
+                            DebugGraphics.popGpuMarker(this.app.graphicsDevice);
                         }
                     }
                 }
             };
-
-            this.layer._commandList.push(this.command);
         }
     }
 
     /**
-     * @function
-     * @name pc.PostEffectQueue#disable
-     * @description Disables the queue and all of its effects.
+     * Disables the queue and all of its effects.
      */
     disable() {
         if (this.enabled) {
@@ -380,72 +333,47 @@ class PostEffectQueue {
             this.app.graphicsDevice.off('resizecanvas', this._onCanvasResized, this);
 
             this._releaseDepthMaps();
+
             this._destroyOffscreenTarget(this._sourceTarget);
 
-            // remove the draw command
-            var i = this.layer._commandList.indexOf(this.command);
-            if (i >= 0) {
-                this.layer._commandList.splice(i, 1);
-            }
-
-            // Reset the UI layer to its original state
-            var layerList = this.app.scene.layers.layerList;
-            var start = layerList.length - 1;
-            for (i = 0; i <= layerList.length; i++) {
-                if (layerList[i].id === LAYERID_UI) {
-                    start = i - 1;
-                    layerList[i].overrideClear = this._origOverrideClear;
-                    layerList[i].clearColorBuffer = this._origClearColorBuffer;
-                    layerList[i].clearDepthBuffer = this._origDepthColorBuffer;
-                    layerList[i].clearStencilBuffer = this._origStencilColorBuffer;
-                    break;
-                }
-            }
-            for (i = start; i >= 0; i--) {
-                if (layerList[i].cameras.indexOf(this.camera) >= 0) {
-                    layerList[i].renderTarget = undefined;
-                }
-            }
-
-            this.app.scene.layers.removeOpaque(this.layer);
-            this.layer = null;
+            this.camera.renderTarget = this.destinationRenderTarget;
+            this.camera.onPostprocessing = null;
         }
     }
 
+    /**
+     * Handler called when the application's canvas element is resized.
+     *
+     * @param {number} width - The new width of the canvas.
+     * @param {number} height - The new height of the canvas.
+     * @private
+     */
     _onCanvasResized(width, height) {
-        var rect = this.camera.rect;
-        var device = this.app.graphicsDevice;
-        this.camera.camera.aspectRatio = (device.width * rect.z) / (device.height * rect.w);
+        const rect = this.camera.rect;
+        const renderTarget = this.destinationRenderTarget;
 
-        // avoid resizing the render targets too often by using a timeout
-        if (this.resizeTimeout)
-            return;
+        width = renderTarget?.width ?? width;
+        height = renderTarget?.height ?? height;
 
-        if ((now() - this.resizeLast) > 100) {
-            // allow resizing immediately if haven't been resized recently
-            this.resizeRenderTargets();
-        } else {
-            // target to maximum at 10 resizes a second
-            this.resizeTimeout = setTimeout(this._resizeTimeoutCallback, 100);
-        }
+        this.camera.camera.aspectRatio = (width * rect.z) / (height * rect.w);
+
+        this.resizeRenderTargets();
     }
 
     resizeRenderTargets() {
-        if (this.resizeTimeout) {
-            clearTimeout(this.resizeTimeout);
-            this.resizeTimeout = null;
-        }
+        const device = this.app.graphicsDevice;
+        const renderTarget = this.destinationRenderTarget;
+        const width = renderTarget?.width ?? device.width;
+        const height = renderTarget?.height ?? device.height;
 
-        this.resizeLast = now();
+        const rect = this.camera.rect;
+        const desiredWidth = Math.floor(rect.z * width);
+        const desiredHeight = Math.floor(rect.w * height);
 
-        var rect = this.camera.rect;
-        var desiredWidth = Math.floor(rect.z * this.app.graphicsDevice.width * this.renderTargetScale);
-        var desiredHeight = Math.floor(rect.w * this.app.graphicsDevice.height * this.renderTargetScale);
+        const effects = this.effects;
 
-        var effects = this.effects;
-
-        for (var i = 0, len = effects.length; i < len; i++) {
-            var fx = effects[i];
+        for (let i = 0, len = effects.length; i < len; i++) {
+            const fx = effects[i];
             if (fx.inputTarget.width !== desiredWidth ||
                 fx.inputTarget.height !== desiredHeight)  {
                 this._resizeOffscreenTarget(fx.inputTarget);
@@ -455,9 +383,6 @@ class PostEffectQueue {
 
     onCameraRectChanged(name, oldValue, newValue) {
         if (this.enabled) {
-            // reset the camera node's rect to full screen otherwise
-            // post effect will not work correctly
-            // this.camera.camera.setRect(0, 0, 1, 1);
             this.resizeRenderTargets();
         }
     }

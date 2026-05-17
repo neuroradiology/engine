@@ -1,35 +1,43 @@
+import { Debug } from '../../../core/debug.js';
 import { Component } from '../component.js';
 import { ComponentSystem } from '../system.js';
-
 import { AudioListenerComponent } from './component.js';
 import { AudioListenerComponentData } from './data.js';
+
+/**
+ * @import { AppBase } from '../../app-base.js'
+ */
 
 const _schema = ['enabled'];
 
 /**
- * @class
- * @name pc.AudioListenerComponentSystem
- * @augments pc.ComponentSystem
- * @classdesc Component System for adding and removing {@link pc.AudioComponent} objects to Entities.
- * @description Create a new AudioListenerComponentSystem.
- * @param {pc.Application} app - The application managing this system.
- * @param {pc.SoundManager} manager - A sound manager instance.
+ * Component System for adding and removing {@link AudioListenerComponent} objects to Entities.
+ *
+ * @category Sound
  */
 class AudioListenerComponentSystem extends ComponentSystem {
-    constructor(app, manager) {
+    /**
+     * Create a new AudioListenerComponentSystem instance.
+     *
+     * @param {AppBase} app - The application managing this system.
+     * @ignore
+     */
+    constructor(app) {
         super(app);
 
-        this.id = "audiolistener";
+        this.id = 'audiolistener';
 
         this.ComponentType = AudioListenerComponent;
         this.DataType = AudioListenerComponentData;
 
         this.schema = _schema;
 
-        this.manager = manager;
+        this.manager = app.soundManager;
+        Debug.assert(this.manager, 'AudioListenerComponentSystem cannot be created without sound manager');
+
         this.current = null;
 
-        ComponentSystem.bind('update', this.onUpdate, this);
+        this.app.systems.on('update', this.onUpdate, this);
     }
 
     initializeComponentData(component, data, properties) {
@@ -40,12 +48,18 @@ class AudioListenerComponentSystem extends ComponentSystem {
 
     onUpdate(dt) {
         if (this.current) {
-            var position = this.current.getPosition();
+            const position = this.current.getPosition();
             this.manager.listener.setPosition(position);
 
-            var wtm = this.current.getWorldTransform();
+            const wtm = this.current.getWorldTransform();
             this.manager.listener.setOrientation(wtm);
         }
+    }
+
+    destroy() {
+        super.destroy();
+
+        this.app.systems.off('update', this.onUpdate, this);
     }
 }
 

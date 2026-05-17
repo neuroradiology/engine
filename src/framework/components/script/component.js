@@ -1,26 +1,198 @@
+import { Debug } from '../../../core/debug.js';
 import { SortedLoopArray } from '../../../core/sorted-loop-array.js';
-
-import { ScriptAttributes } from '../../../script/script-attributes.js';
-
+import { ScriptAttributes, assignAttributesToScript } from '../../script/script-attributes.js';
 import { Component } from '../component.js';
 import { Entity } from '../../entity.js';
+import {
+    SCRIPT_INITIALIZE, SCRIPT_POST_INITIALIZE, SCRIPT_UPDATE,
+    SCRIPT_POST_UPDATE, SCRIPT_SWAP
+} from '../../script/constants.js';
+import { ScriptType } from '../../script/script-type.js';
+import { getScriptName } from '../../script/script.js';
 
 /**
- * @component
- * @class
- * @name pc.ScriptComponent
- * @augments pc.Component
- * @classdesc The ScriptComponent allows you to extend the functionality of an Entity by attaching your own Script Types defined in JavaScript files
- * to be executed with access to the Entity. For more details on scripting see <a href="//developer.playcanvas.com/user-manual/scripting/">Scripting</a>.
- * @param {pc.ScriptComponentSystem} system - The ComponentSystem that created this Component.
- * @param {pc.Entity} entity - The Entity that this Component is attached to.
- * @property {pc.ScriptType[]} scripts An array of all script instances attached to an entity. This Array shall not be modified by developer.
+ * @import { ScriptComponentSystem } from './system.js'
+ * @import { Script } from '../../script/script.js'
+ */
+
+const toLowerCamelCase = str => str[0].toLowerCase() + str.substring(1);
+
+/**
+ * The ScriptComponent enables an {@link Entity} to have custom behavior by attaching scripts
+ * written in JavaScript (or TypeScript).
+ *
+ * You should never need to use the ScriptComponent constructor directly. To add a
+ * ScriptComponent to an {@link Entity}, use {@link Entity#addComponent}:
+ *
+ * ```javascript
+ * const entity = new pc.Entity();
+ * entity.addComponent('script');
+ * ```
+ *
+ * Once the ScriptComponent is added to the entity, you can access it via the
+ * {@link Entity#script} property:
+ *
+ * ```javascript
+ * // Option 1: Add a script using the name registered in the ScriptRegistry
+ * entity.script.create('cameraControls');
+ *
+ * // Option 2: Add a script using the script class
+ * entity.script.create(CameraControls);
+ * ```
+ *
+ * For more details on scripting see the [Scripting Section](https://developer.playcanvas.com/user-manual/scripting/)
+ * of the User Manual.
+ *
+ * @hideconstructor
+ * @category Script
  */
 class ScriptComponent extends Component {
+    /**
+     * A map of script name to initial component data.
+     *
+     * @type {Map<string, object>}
+     * @private
+     */
+    _attributeDataMap = new Map();
+
+    /**
+     * Fired when a {@link ScriptType} instance is created and attached to the script component.
+     * This event is available in two forms. They are as follows:
+     *
+     * 1. `create` - Fired when a script instance is created. The name of the script type and the
+     * script type instance are passed as arguments.
+     * 2. `create:[name]` - Fired when a script instance is created that has the specified script
+     * type name. The script instance is passed as an argument to the handler.
+     *
+     * @event
+     * @example
+     * entity.script.on('create', (name, scriptInstance) => {
+     *     console.log(`Instance of script '${name}' created`);
+     * });
+     * @example
+     * entity.script.on('create:player', (scriptInstance) => {
+     *     console.log(`Instance of script 'player' created`);
+     * });
+     */
+    static EVENT_CREATE = 'create';
+
+    /**
+     * Fired when a {@link ScriptType} instance is destroyed and removed from the script component.
+     * This event is available in two forms. They are as follows:
+     *
+     * 1. `destroy` - Fired when a script instance is destroyed. The name of the script type and
+     * the script type instance are passed as arguments.
+     * 2. `destroy:[name]` - Fired when a script instance is destroyed that has the specified
+     * script type name. The script instance is passed as an argument.
+     *
+     * @event
+     * @example
+     * entity.script.on('destroy', (name, scriptInstance) => {
+     *     console.log(`Instance of script '${name}' destroyed`);
+     * });
+     * @example
+     * entity.script.on('destroy:player', (scriptInstance) => {
+     *     console.log(`Instance of script 'player' destroyed`);
+     * });
+     */
+    static EVENT_DESTROY = 'destroy';
+
+    /**
+     * Fired when the script component becomes enabled. This event does not take into account the
+     * enabled state of the entity or any of its ancestors.
+     *
+     * @event
+     * @example
+     * entity.script.on('enable', () => {
+     *     console.log(`Script component of entity '${entity.name}' has been enabled`);
+     * });
+     */
+    static EVENT_ENABLE = 'enable';
+
+    /**
+     * Fired when the script component becomes disabled. This event does not take into account the
+     * enabled state of the entity or any of its ancestors.
+     *
+     * @event
+     * @example
+     * entity.script.on('disable', () => {
+     *     console.log(`Script component of entity '${entity.name}' has been disabled`);
+     * });
+     */
+    static EVENT_DISABLE = 'disable';
+
+    /**
+     * Fired when the script component has been removed from its entity.
+     *
+     * @event
+     * @example
+     * entity.script.on('remove', () => {
+     *     console.log(`Script component removed from entity '${entity.name}'`);
+     * });
+     */
+    static EVENT_REMOVE = 'remove';
+
+    /**
+     * Fired when the script component changes state to enabled or disabled. The handler is passed
+     * the new boolean enabled state of the script component. This event does not take into account
+     * the enabled state of the entity or any of its ancestors.
+     *
+     * @event
+     * @example
+     * entity.script.on('state', (enabled) => {
+     *     console.log(`Script component of entity '${entity.name}' changed state to '${enabled}'`);
+     * });
+     */
+    static EVENT_STATE = 'state';
+
+    /**
+     * Fired when the index of a {@link ScriptType} instance is changed in the script component.
+     * This event is available in two forms. They are as follows:
+     *
+     * 1. `move` - Fired when a script instance is moved. The name of the script type, the script
+     * type instance, the new index and the old index are passed as arguments.
+     * 2. `move:[name]` - Fired when a specifically named script instance is moved. The script
+     * instance, the new index and the old index are passed as arguments.
+     *
+     * @event
+     * @example
+     * entity.script.on('move', (name, scriptInstance, newIndex, oldIndex) => {
+     *     console.log(`Script '${name}' moved from index '${oldIndex}' to '${newIndex}'`);
+     * });
+     * @example
+     * entity.script.on('move:player', (scriptInstance, newIndex, oldIndex) => {
+     *     console.log(`Script 'player' moved from index '${oldIndex}' to '${newIndex}'`);
+     * });
+     */
+    static EVENT_MOVE = 'move';
+
+    /**
+     * Fired when a {@link ScriptType} instance had an exception. The handler is passed the script
+     * instance, the exception and the method name that the exception originated from.
+     *
+     * @event
+     * @example
+     * entity.script.on('error', (scriptInstance, exception, methodName) => {
+     *     console.log(`Script error: ${exception} in method '${methodName}'`);
+     * });
+     */
+    static EVENT_ERROR = 'error';
+
+    /**
+     * Create a new ScriptComponent instance.
+     *
+     * @param {ScriptComponentSystem} system - The ComponentSystem that created this Component.
+     * @param {Entity} entity - The Entity that this Component is attached to.
+     */
     constructor(system, entity) {
         super(system, entity);
 
-        // holds all script instances for this component
+        /**
+         * Holds all script instances for this component.
+         *
+         * @type {ScriptType[]}
+         * @private
+         */
         this._scripts = [];
         // holds all script instances with an update method
         this._updateList = new SortedLoopArray({ sortBy: '__executionOrder' });
@@ -51,143 +223,79 @@ class ScriptComponent extends Component {
         this.on('set_enabled', this._onSetEnabled, this);
     }
 
-    static scriptMethods = {
-        initialize: 'initialize',
-        postInitialize: 'postInitialize',
-        update: 'update',
-        postUpdate: 'postUpdate',
-        swap: 'swap'
-    };
+    /**
+     * Sets the array of all script instances attached to an entity. This array is read-only and
+     * should not be modified by developer.
+     *
+     * @type {Script[]}
+     */
+    set scripts(value) {
+        this._scriptsData = value;
+
+        for (const key in value) {
+            if (!value.hasOwnProperty(key)) {
+                continue;
+            }
+
+            const script = this._scriptsIndex[key];
+            if (script) {
+                // existing script
+
+                // enabled
+                if (typeof value[key].enabled === 'boolean') {
+
+                    // Before a script is initialized, initialize any attributes
+                    script.once('preInitialize', () => {
+                        this.initializeAttributes(script);
+                    });
+                    script.enabled = !!value[key].enabled;
+                }
+
+                // attributes
+                if (typeof value[key].attributes === 'object') {
+                    for (const attr in value[key].attributes) {
+                        if (ScriptAttributes.reservedNames.has(attr)) {
+                            continue;
+                        }
+
+                        if (!script.__attributes.hasOwnProperty(attr)) {
+                            // new attribute
+                            const scriptType = this.system.app.scripts.get(key);
+                            if (scriptType) {
+                                scriptType.attributes.add(attr, { });
+                            }
+                        }
+
+                        // update attribute
+                        script[attr] = value[key].attributes[attr];
+                    }
+                }
+            } else {
+                // TODO scripts2
+                // new script
+                console.log(this.order);
+            }
+        }
+    }
 
     /**
-     * @event
-     * @name pc.ScriptComponent#enable
-     * @description Fired when Component becomes enabled
-     * Note: this event does not take in account entity or any of its parent enabled state.
-     * @example
-     * entity.script.on('enable', function () {
-     *     // component is enabled
-     * });
+     * Gets the array of all script instances attached to an entity.
+     *
+     * @type {ScriptType[]}
      */
+    get scripts() {
+        return this._scripts;
+    }
 
-    /**
-     * @event
-     * @name pc.ScriptComponent#disable
-     * @description Fired when Component becomes disabled
-     * Note: this event does not take in account entity or any of its parent enabled state.
-     * @example
-     * entity.script.on('disable', function () {
-     *     // component is disabled
-     * });
-     */
+    set enabled(value) {
+        const oldValue = this._enabled;
+        this._enabled = value;
+        this.fire('set', 'enabled', oldValue, value);
+    }
 
-    /**
-     * @event
-     * @name pc.ScriptComponent#state
-     * @description Fired when Component changes state to enabled or disabled
-     * Note: this event does not take in account entity or any of its parent enabled state.
-     * @param {boolean} enabled - True if now enabled, False if disabled.
-     * @example
-     * entity.script.on('state', function (enabled) {
-     *     // component changed state
-     * });
-     */
-
-    /**
-     * @event
-     * @name pc.ScriptComponent#remove
-     * @description Fired when Component is removed from entity.
-     * @example
-     * entity.script.on('remove', function () {
-     *     // entity has no more script component
-     * });
-     */
-
-    /**
-     * @event
-     * @name pc.ScriptComponent#create
-     * @description Fired when a script instance is created and attached to component.
-     * @param {string} name - The name of the Script Type.
-     * @param {pc.ScriptType} scriptInstance - The instance of the {@link pc.ScriptType} that has been created.
-     * @example
-     * entity.script.on('create', function (name, scriptInstance) {
-     *     // new script instance added to component
-     * });
-     */
-
-    /**
-     * @event
-     * @name pc.ScriptComponent#create:[name]
-     * @description Fired when a script instance is created and attached to component.
-     * @param {pc.ScriptType} scriptInstance - The instance of the {@link pc.ScriptType} that has been created.
-     * @example
-     * entity.script.on('create:playerController', function (scriptInstance) {
-     *     // new script instance 'playerController' is added to component
-     * });
-     */
-
-    /**
-     * @event
-     * @name pc.ScriptComponent#destroy
-     * @description Fired when a script instance is destroyed and removed from component.
-     * @param {string} name - The name of the Script Type.
-     * @param {pc.ScriptType} scriptInstance - The instance of the {@link pc.ScriptType} that has been destroyed.
-     * @example
-     * entity.script.on('destroy', function (name, scriptInstance) {
-     *     // script instance has been destroyed and removed from component
-     * });
-     */
-
-    /**
-     * @event
-     * @name pc.ScriptComponent#destroy:[name]
-     * @description Fired when a script instance is destroyed and removed from component.
-     * @param {pc.ScriptType} scriptInstance - The instance of the {@link pc.ScriptType} that has been destroyed.
-     * @example
-     * entity.script.on('destroy:playerController', function (scriptInstance) {
-     *     // script instance 'playerController' has been destroyed and removed from component
-     * });
-     */
-
-    /**
-     * @event
-     * @name pc.ScriptComponent#move
-     * @description Fired when a script instance is moved in component.
-     * @param {string} name - The name of the Script Type.
-     * @param {pc.ScriptType} scriptInstance - The instance of the {@link pc.ScriptType} that has been moved.
-     * @param {number} ind - New position index.
-     * @param {number} indOld - Old position index.
-     * @example
-     * entity.script.on('move', function (name, scriptInstance, ind, indOld) {
-     *     // script instance has been moved in component
-     * });
-     */
-
-    /**
-     * @event
-     * @name pc.ScriptComponent#move:[name]
-     * @description Fired when a script instance is moved in component.
-     * @param {pc.ScriptType} scriptInstance - The instance of the {@link pc.ScriptType} that has been moved.
-     * @param {number} ind - New position index.
-     * @param {number} indOld - Old position index.
-     * @example
-     * entity.script.on('move:playerController', function (scriptInstance, ind, indOld) {
-     *     // script instance 'playerController' has been moved in component
-     * });
-     */
-
-    /**
-     * @event
-     * @name pc.ScriptComponent#error
-     * @description Fired when a script instance had an exception.
-     * @param {pc.ScriptType} scriptInstance - The instance of the {@link pc.ScriptType} that raised the exception.
-     * @param {Error} err - Native JS Error object with details of an error.
-     * @param {string} method - The method of the script instance that the exception originated from.
-     * @example
-     * entity.script.on('error', function (scriptInstance, err, method) {
-     *     // script instance caught an exception
-     * });
-     */
+    get enabled() {
+        return this._enabled;
+    }
 
     onEnable() {
         this._beingEnabled = true;
@@ -205,18 +313,17 @@ class ScriptComponent extends Component {
     }
 
     onPostStateChange() {
-        var script;
+        const wasLooping = this._beginLooping();
 
-        var wasLooping = this._beginLooping();
-
-        for (var i = 0, len = this.scripts.length; i < len; i++) {
-            script = this.scripts[i];
+        for (let i = 0, len = this.scripts.length; i < len; i++) {
+            const script = this.scripts[i];
 
             if (script._initialized && !script._postInitialized && script.enabled) {
                 script._postInitialized = true;
 
-                if (script.postInitialize)
-                    this._scriptMethod(script, ScriptComponent.scriptMethods.postInitialize);
+                if (script.postInitialize) {
+                    this._scriptMethod(script, SCRIPT_POST_INITIALIZE);
+                }
             }
         }
 
@@ -226,7 +333,7 @@ class ScriptComponent extends Component {
     // Sets isLoopingThroughScripts to false and returns
     // its previous value
     _beginLooping() {
-        var looping = this._isLoopingThroughScripts;
+        const looping = this._isLoopingThroughScripts;
         this._isLoopingThroughScripts = true;
         return looping;
     }
@@ -250,9 +357,10 @@ class ScriptComponent extends Component {
     }
 
     _checkState() {
-        var state = this.enabled && this.entity.enabled;
-        if (state === this._oldState)
+        const state = this.enabled && this.entity.enabled;
+        if (state === this._oldState) {
             return;
+        }
 
         this._oldState = state;
 
@@ -265,11 +373,13 @@ class ScriptComponent extends Component {
             this.system._removeComponentFromEnabled(this);
         }
 
-        var wasLooping = this._beginLooping();
+        const wasLooping = this._beginLooping();
 
-        var script;
-        for (var i = 0, len = this.scripts.length; i < len; i++) {
-            script = this.scripts[i];
+        for (let i = 0, len = this.scripts.length; i < len; i++) {
+            const script = this.scripts[i];
+            script.once('preInitialize', () => {
+                this.initializeAttributes(script);
+            });
             script.enabled = script._enabled;
         }
 
@@ -279,11 +389,11 @@ class ScriptComponent extends Component {
     _onBeforeRemove() {
         this.fire('remove');
 
-        var wasLooping = this._beginLooping();
+        const wasLooping = this._beginLooping();
 
         // destroy all scripts
-        for (var i = 0; i < this.scripts.length; i++) {
-            var script = this.scripts[i];
+        for (let i = 0; i < this.scripts.length; i++) {
+            const script = this.scripts[i];
             if (!script) continue;
 
             this.destroy(script.__scriptType.__name);
@@ -293,12 +403,11 @@ class ScriptComponent extends Component {
     }
 
     _removeDestroyedScripts() {
-        var len = this._destroyedScripts.length;
+        const len = this._destroyedScripts.length;
         if (!len) return;
 
-        var i;
-        for (i = 0; i < len; i++) {
-            var script = this._destroyedScripts[i];
+        for (let i = 0; i < len; i++) {
+            const script = this._destroyedScripts[i];
             this._removeScriptInstance(script);
         }
 
@@ -309,22 +418,54 @@ class ScriptComponent extends Component {
     }
 
     _onInitializeAttributes() {
-        for (var i = 0, len = this.scripts.length; i < len; i++)
-            this.scripts[i].__initializeAttributes();
+        for (let i = 0, len = this.scripts.length; i < len; i++) {
+            const script = this.scripts[i];
+            this.initializeAttributes(script);
+        }
+    }
+
+    initializeAttributes(script) {
+
+        // if script has __initializeAttributes method assume it has a runtime schema
+        if (script instanceof ScriptType) {
+
+            script.__initializeAttributes();
+
+        } else {
+
+            // otherwise we need to manually initialize attributes from the schema
+            const name = script.__scriptType.__name;
+            const data = this._attributeDataMap.get(name);
+
+            // If not data exists return early
+            if (!data) {
+                return;
+            }
+
+            // Fetch schema and warn if it doesn't exist
+            const schema = this.system.app.scripts?.getSchema(name);
+            if (!schema) {
+                Debug.warnOnce(`No schema exists for the script '${name}'. A schema must exist for data to be instantiated on the script.`);
+            }
+
+            // Assign the attributes to the script instance based on the attribute schema
+            assignAttributesToScript(this.system.app, schema.attributes, data, script);
+
+        }
     }
 
     _scriptMethod(script, method, arg) {
-        // #ifdef DEBUG
+        // #if _DEBUG
         try {
         // #endif
             script[method](arg);
-        // #ifdef DEBUG
+        // #if _DEBUG
         } catch (ex) {
             // disable script if it fails to call method
             script.enabled = false;
 
-            if (!script._callbacks || !script._callbacks.error) {
-                console.warn('unhandled exception while calling "' + method + '" for "' + script.__scriptType.__name + '" script: ', ex);
+            if (!script.hasEvent('error')) {
+                console.warn(`unhandled exception while calling "${method}" for "${script.__scriptType.__name}" script: `, ex);
                 console.error(ex);
             }
 
@@ -335,16 +476,17 @@ class ScriptComponent extends Component {
     }
 
     _onInitialize() {
-        var script, scripts = this._scripts;
+        const scripts = this._scripts;
 
-        var wasLooping = this._beginLooping();
+        const wasLooping = this._beginLooping();
 
-        for (var i = 0, len = scripts.length; i < len; i++) {
-            script = scripts[i];
+        for (let i = 0, len = scripts.length; i < len; i++) {
+            const script = scripts[i];
             if (!script._initialized && script.enabled) {
                 script._initialized = true;
-                if (script.initialize)
-                    this._scriptMethod(script, ScriptComponent.scriptMethods.initialize);
+                if (script.initialize) {
+                    this._scriptMethod(script, SCRIPT_INITIALIZE);
+                }
             }
         }
 
@@ -356,51 +498,46 @@ class ScriptComponent extends Component {
     }
 
     _onUpdate(dt) {
-        var self = this;
-        var list = self._updateList;
+        const list = this._updateList;
         if (!list.length) return;
 
-        var script;
-
-        var wasLooping = self._beginLooping();
+        const wasLooping = this._beginLooping();
 
         for (list.loopIndex = 0; list.loopIndex < list.length; list.loopIndex++) {
-            script = list.items[list.loopIndex];
+            const script = list.items[list.loopIndex];
             if (script.enabled) {
-                self._scriptMethod(script, ScriptComponent.scriptMethods.update, dt);
+                this._scriptMethod(script, SCRIPT_UPDATE, dt);
             }
         }
 
-        self._endLooping(wasLooping);
+        this._endLooping(wasLooping);
     }
 
     _onPostUpdate(dt) {
-        var self = this;
-        var list = self._postUpdateList;
+        const list = this._postUpdateList;
         if (!list.length) return;
 
-        var wasLooping = self._beginLooping();
-
-        var script;
+        const wasLooping = this._beginLooping();
 
         for (list.loopIndex = 0; list.loopIndex < list.length; list.loopIndex++) {
-            script = list.items[list.loopIndex];
+            const script = list.items[list.loopIndex];
             if (script.enabled) {
-                self._scriptMethod(script, ScriptComponent.scriptMethods.postUpdate, dt);
+                this._scriptMethod(script, SCRIPT_POST_UPDATE, dt);
             }
         }
 
-        self._endLooping(wasLooping);
+        this._endLooping(wasLooping);
     }
 
     /**
-     * @private
-     * @function
-     * @description Inserts script instance into the scripts array at the specified index. Also inserts the script
-     * into the update list if it has an update method and the post update list if it has a postUpdate method.
+     * Inserts script instance into the scripts array at the specified index. Also inserts the
+     * script into the update list if it has an update method and the post update list if it has a
+     * postUpdate method.
+     *
      * @param {object} scriptInstance - The script instance.
-     * @param {number} index - The index where to insert the script at. If -1 then append it at the end.
+     * @param {number} index - The index where to insert the script at. If -1, append it at the end.
      * @param {number} scriptsLength - The length of the scripts array.
+     * @private
      */
     _insertScriptInstance(scriptInstance, index, scriptsLength) {
         if (index === -1) {
@@ -441,7 +578,7 @@ class ScriptComponent extends Component {
     }
 
     _removeScriptInstance(scriptInstance) {
-        var idx = this._scripts.indexOf(scriptInstance);
+        const idx = this._scripts.indexOf(scriptInstance);
         if (idx === -1) return idx;
 
         this._scripts.splice(idx, 1);
@@ -458,7 +595,7 @@ class ScriptComponent extends Component {
     }
 
     _resetExecutionOrder(startIndex, scriptsLength) {
-        for (var i = startIndex; i < scriptsLength; i++) {
+        for (let i = startIndex; i < scriptsLength; i++) {
             this._scripts[i].__executionOrder = i;
         }
     }
@@ -466,14 +603,14 @@ class ScriptComponent extends Component {
     _resolveEntityScriptAttribute(attribute, attributeName, oldValue, useGuid, newAttributes, duplicatedIdsMap) {
         if (attribute.array) {
             // handle entity array attribute
-            var len = oldValue.length;
-            if (! len) {
+            const len = oldValue.length;
+            if (!len) {
                 return;
             }
 
-            var newGuidArray = oldValue.slice();
-            for (var i = 0; i < len; i++) {
-                var guid = newGuidArray[i] instanceof Entity ? newGuidArray[i].getGuid() : newGuidArray[i];
+            const newGuidArray = oldValue.slice();
+            for (let i = 0; i < len; i++) {
+                const guid = newGuidArray[i] instanceof Entity ? newGuidArray[i].getGuid() : newGuidArray[i];
                 if (duplicatedIdsMap[guid]) {
                     newGuidArray[i] = useGuid ? duplicatedIdsMap[guid].getGuid() : duplicatedIdsMap[guid];
                 }
@@ -494,71 +631,70 @@ class ScriptComponent extends Component {
         }
     }
 
-    /* eslint-disable jsdoc/no-undefined-types */
     /**
-     * @function
-     * @name pc.ScriptComponent#has
-     * @description Detect if script is attached to an entity.
-     * @param {string|Class<pc.ScriptType>} nameOrType - The name or type of {@link pc.ScriptType}.
+     * Detect if script is attached to an entity.
+     *
+     * @param {string|typeof ScriptType} nameOrType - The name or type of {@link ScriptType}.
      * @returns {boolean} If script is attached to an entity.
      * @example
      * if (entity.script.has('playerController')) {
      *     // entity has script
      * }
      */
-    /* eslint-enable jsdoc/no-undefined-types */
     has(nameOrType) {
         if (typeof nameOrType === 'string') {
             return !!this._scriptsIndex[nameOrType];
         }
 
         if (!nameOrType) return false;
-        var scriptType = nameOrType;
-        var scriptName = scriptType.__name;
-        var scriptData = this._scriptsIndex[scriptName];
-        var scriptInstance = scriptData && scriptData.instance;
+        const scriptType = nameOrType;
+        const scriptName = scriptType.__name;
+        const scriptData = this._scriptsIndex[scriptName];
+        const scriptInstance = scriptData && scriptData.instance;
         return scriptInstance instanceof scriptType; // will return false if scriptInstance undefined
     }
 
-    /* eslint-disable jsdoc/no-undefined-types */
     /**
-     * @function
-     * @name pc.ScriptComponent#get
-     * @description Get a script instance (if attached).
-     * @param {string|Class<pc.ScriptType>} nameOrType - The name or type of {@link pc.ScriptType}.
-     * @returns {pc.ScriptType|null} If script is attached, the instance is returned. Otherwise null is returned.
+     * Get a script instance (if attached).
+     *
+     * @param {string|typeof ScriptType} nameOrType - The name or type of {@link ScriptType}.
+     * @returns {ScriptType|null} If script is attached, the instance is returned. Otherwise null
+     * is returned.
      * @example
-     * var controller = entity.script.get('playerController');
+     * const controller = entity.script.get('playerController');
      */
-    /* eslint-enable jsdoc/no-undefined-types */
     get(nameOrType) {
         if (typeof nameOrType === 'string') {
-            var data = this._scriptsIndex[nameOrType];
+            const data = this._scriptsIndex[nameOrType];
             return data ? data.instance : null;
         }
 
         if (!nameOrType) return null;
-        var scriptType = nameOrType;
-        var scriptName = scriptType.__name;
-        var scriptData = this._scriptsIndex[scriptName];
-        var scriptInstance = scriptData && scriptData.instance;
+        const scriptType = nameOrType;
+        const scriptName = scriptType.__name;
+        const scriptData = this._scriptsIndex[scriptName];
+        const scriptInstance = scriptData && scriptData.instance;
         return scriptInstance instanceof scriptType ? scriptInstance : null;
     }
 
-    /* eslint-disable jsdoc/no-undefined-types */
     /**
-     * @function
-     * @name pc.ScriptComponent#create
-     * @description Create a script instance and attach to an entity script component.
-     * @param {string|Class<pc.ScriptType>} nameOrType - The name or type of {@link pc.ScriptType}.
+     * Create a script instance and attach to an entity script component.
+     *
+     * @param {string|typeof Script} nameOrType - The name or type of {@link Script}.
      * @param {object} [args] - Object with arguments for a script.
-     * @param {boolean} [args.enabled] - If script instance is enabled after creation. Defaults to true.
-     * @param {object} [args.attributes] - Object with values for attributes (if any), where key is name of an attribute.
-     * @param {boolean} [args.preloading] - If script instance is created during preload. If true, script and attributes must be initialized manually. Defaults to false.
-     * @param {number} [args.ind] - The index where to insert the script instance at. Defaults to -1, which means append it at the end.
-     * @returns {pc.ScriptType} Returns an instance of a {@link pc.ScriptType} if successfully attached to an entity,
-     * or null if it failed because a script with a same name has already been added
-     * or if the {@link pc.ScriptType} cannot be found by name in the {@link pc.ScriptRegistry}.
+     * @param {boolean} [args.enabled] - If script instance is enabled after creation. Defaults to
+     * true.
+     * @param {object} [args.attributes] - Object with values for attributes (if any), where key is
+     * name of an attribute.
+     * @param {object} [args.properties] - Object with values that are **assigned** to the script instance.
+     * @param {boolean} [args.preloading] - If script instance is created during preload. If true,
+     * script and attributes must be initialized manually. Defaults to false.
+     * @param {number} [args.ind] - The index where to insert the script instance at. Defaults to
+     * -1, which means append it at the end.
+     * @returns {ScriptType|null} Returns an instance of a {@link ScriptType} if successfully
+     * attached to an entity, or null if it failed because a script with a same name has already
+     * been added or if the {@link ScriptType} cannot be found by name in the
+     * {@link ScriptRegistry}.
      * @example
      * entity.script.create('playerController', {
      *     attributes: {
@@ -566,34 +702,55 @@ class ScriptComponent extends Component {
      *     }
      * });
      */
-    /* eslint-enable jsdoc/no-undefined-types */
     create(nameOrType, args = {}) {
-        var self = this;
+        const self = this;
 
-        var scriptType = nameOrType;
-        var scriptName = nameOrType;
+        let scriptType = nameOrType;
+        let scriptName = nameOrType;
 
         // shorthand using script name
         if (typeof scriptType === 'string') {
             scriptType = this.system.app.scripts.get(scriptType);
         } else if (scriptType) {
+
+            const inferredScriptName = getScriptName(scriptType);
+            const lowerInferredScriptName = toLowerCamelCase(inferredScriptName);
+
+            if (!(scriptType.prototype instanceof ScriptType) && !scriptType.scriptName) {
+                Debug.warnOnce(`The Script class "${inferredScriptName}" must have a static "scriptName" property: \`${inferredScriptName}.scriptName = "${lowerInferredScriptName}";\`. This will be an error in future versions of PlayCanvas.`);
+            }
+
+            scriptType.__name ??= scriptType.scriptName ?? lowerInferredScriptName;
             scriptName = scriptType.__name;
         }
 
         if (scriptType) {
             if (!this._scriptsIndex[scriptName] || !this._scriptsIndex[scriptName].instance) {
                 // create script instance
-                var scriptInstance = new scriptType({
+                const scriptInstance = new scriptType({
                     app: this.system.app,
                     entity: this.entity,
                     enabled: args.hasOwnProperty('enabled') ? args.enabled : true,
-                    attributes: args.attributes
+                    attributes: args.attributes || {}
                 });
 
-                var len = this._scripts.length;
-                var ind = -1;
-                if (typeof args.ind === 'number' && args.ind !== -1 && len > args.ind)
+                if (args.properties && typeof args.properties === 'object') {
+                    Object.assign(scriptInstance, args.properties);
+                }
+
+                // If the script is not a ScriptType then we must store attribute data on the component
+                if (!(scriptInstance instanceof ScriptType) && args.attributes) {
+
+                    // Store the Attribute data
+                    this._attributeDataMap.set(scriptName, { ...args.attributes });
+
+                }
+
+                const len = this._scripts.length;
+                let ind = -1;
+                if (typeof args.ind === 'number' && args.ind !== -1 && len > args.ind) {
                     ind = args.ind;
+                }
 
                 this._insertScriptInstance(scriptInstance, ind, len);
 
@@ -606,27 +763,30 @@ class ScriptComponent extends Component {
 
                 this[scriptName] = scriptInstance;
 
-                if (!args.preloading)
-                    scriptInstance.__initializeAttributes();
+                if (!args.preloading) {
+                    this.initializeAttributes(scriptInstance);
+                }
 
                 this.fire('create', scriptName, scriptInstance);
-                this.fire('create:' + scriptName, scriptInstance);
+                this.fire(`create:${scriptName}`, scriptInstance);
 
-                this.system.app.scripts.on('swap:' + scriptName, this._scriptsIndex[scriptName].onSwap);
+                this.system.app.scripts.on(`swap:${scriptName}`, this._scriptsIndex[scriptName].onSwap);
 
                 if (!args.preloading) {
 
                     if (scriptInstance.enabled && !scriptInstance._initialized) {
                         scriptInstance._initialized = true;
 
-                        if (scriptInstance.initialize)
-                            this._scriptMethod(scriptInstance, ScriptComponent.scriptMethods.initialize);
+                        if (scriptInstance.initialize) {
+                            this._scriptMethod(scriptInstance, SCRIPT_INITIALIZE);
+                        }
                     }
 
                     if (scriptInstance.enabled && !scriptInstance._postInitialized) {
                         scriptInstance._postInitialized = true;
-                        if (scriptInstance.postInitialize)
-                            this._scriptMethod(scriptInstance, ScriptComponent.scriptMethods.postInitialize);
+                        if (scriptInstance.postInitialize) {
+                            this._scriptMethod(scriptInstance, SCRIPT_POST_INITIALIZE);
+                        }
                     }
                 }
 
@@ -634,33 +794,30 @@ class ScriptComponent extends Component {
                 return scriptInstance;
             }
 
-            console.warn('script \'' + scriptName + '\' is already added to entity \'' + this.entity.name + '\'');
+            Debug.warn(`script '${scriptName}' is already added to entity '${this.entity.name}'`);
         } else {
             this._scriptsIndex[scriptName] = {
                 awaiting: true,
                 ind: this._scripts.length
             };
 
-            console.warn('script \'' + scriptName + '\' is not found, awaiting it to be added to registry');
+            Debug.warn(`script '${scriptName}' is not found, awaiting it to be added to registry`);
         }
 
         return null;
     }
 
-    /* eslint-disable jsdoc/no-undefined-types */
     /**
-     * @function
-     * @name pc.ScriptComponent#destroy
-     * @description Destroy the script instance that is attached to an entity.
-     * @param {string|Class<pc.ScriptType>} nameOrType - The name or type of {@link pc.ScriptType}.
+     * Destroy the script instance that is attached to an entity.
+     *
+     * @param {string|typeof ScriptType} nameOrType - The name or type of {@link ScriptType}.
      * @returns {boolean} If it was successfully destroyed.
      * @example
      * entity.script.destroy('playerController');
      */
-    /* eslint-enable jsdoc/no-undefined-types */
     destroy(nameOrType) {
-        var scriptName = nameOrType;
-        var scriptType = nameOrType;
+        let scriptName = nameOrType;
+        let scriptType = nameOrType;
 
         // shorthand using script name
         if (typeof scriptType === 'string') {
@@ -669,11 +826,13 @@ class ScriptComponent extends Component {
             scriptName = scriptType.__name;
         }
 
-        var scriptData = this._scriptsIndex[scriptName];
+        const scriptData = this._scriptsIndex[scriptName];
         delete this._scriptsIndex[scriptName];
         if (!scriptData) return false;
 
-        var scriptInstance = scriptData.instance;
+        this._attributeDataMap.delete(scriptName);
+
+        const scriptInstance = scriptData.instance;
         if (scriptInstance && !scriptInstance._destroyed) {
             scriptInstance.enabled = false;
             scriptInstance._destroyed = true;
@@ -681,7 +840,7 @@ class ScriptComponent extends Component {
             // if we are not currently looping through our scripts
             // then it's safe to remove the script
             if (!this._isLoopingThroughScripts) {
-                var ind = this._removeScriptInstance(scriptInstance);
+                const ind = this._removeScriptInstance(scriptInstance);
                 if (ind >= 0) {
                     this._resetExecutionOrder(ind, this._scripts.length);
                 }
@@ -693,32 +852,30 @@ class ScriptComponent extends Component {
         }
 
         // remove swap event
-        this.system.app.scripts.off('swap:' + scriptName, scriptData.onSwap);
+        this.system.app.scripts.off(`swap:${scriptName}`, scriptData.onSwap);
 
         delete this[scriptName];
 
         this.fire('destroy', scriptName, scriptInstance || null);
-        this.fire('destroy:' + scriptName, scriptInstance || null);
+        this.fire(`destroy:${scriptName}`, scriptInstance || null);
 
-        if (scriptInstance)
+        if (scriptInstance) {
             scriptInstance.fire('destroy');
+        }
 
         return true;
     }
 
-    /* eslint-disable jsdoc/no-undefined-types */
     /**
-     * @private
-     * @function
-     * @name pc.ScriptComponent#swap
-     * @description Swap the script instance.
-     * @param {string|Class<pc.ScriptType>} nameOrType - The name or type of {@link pc.ScriptType}.
+     * Swap the script instance.
+     *
+     * @param {string|typeof ScriptType} nameOrType - The name or type of {@link ScriptType}.
      * @returns {boolean} If it was successfully swapped.
+     * @private
      */
-    /* eslint-enable jsdoc/no-undefined-types */
     swap(nameOrType) {
-        var scriptName = nameOrType;
-        var scriptType = nameOrType;
+        let scriptName = nameOrType;
+        let scriptType = nameOrType;
 
         // shorthand using script name
         if (typeof scriptType === 'string') {
@@ -727,23 +884,24 @@ class ScriptComponent extends Component {
             scriptName = scriptType.__name;
         }
 
-        var old = this._scriptsIndex[scriptName];
+        const old = this._scriptsIndex[scriptName];
         if (!old || !old.instance) return false;
 
-        var scriptInstanceOld = old.instance;
-        var ind = this._scripts.indexOf(scriptInstanceOld);
+        const scriptInstanceOld = old.instance;
+        const ind = this._scripts.indexOf(scriptInstanceOld);
 
-        var scriptInstance = new scriptType({
+        const scriptInstance = new scriptType({
             app: this.system.app,
             entity: this.entity,
             enabled: scriptInstanceOld.enabled,
             attributes: scriptInstanceOld.__attributes
         });
 
-        if (!scriptInstance.swap)
+        if (!scriptInstance.swap) {
             return false;
+        }
 
-        scriptInstance.__initializeAttributes();
+        this.initializeAttributes(scriptInstance);
 
         // add to component
         this._scripts[ind] = scriptInstance;
@@ -767,40 +925,40 @@ class ScriptComponent extends Component {
             this._postUpdateList.insert(scriptInstance);
         }
 
-        this._scriptMethod(scriptInstance, ScriptComponent.scriptMethods.swap, scriptInstanceOld);
+        this._scriptMethod(scriptInstance, SCRIPT_SWAP, scriptInstanceOld);
 
         this.fire('swap', scriptName, scriptInstance);
-        this.fire('swap:' + scriptName, scriptInstance);
+        this.fire(`swap:${scriptName}`, scriptInstance);
 
         return true;
     }
 
     /**
-     * @function
+     * When an entity is cloned and it has entity script attributes that point to other entities in
+     * the same subtree that is cloned, then we want the new script attributes to point at the
+     * cloned entities. This method remaps the script attributes for this entity and it assumes
+     * that this entity is the result of the clone operation.
+     *
+     * @param {ScriptComponent} oldScriptComponent - The source script component that belongs to
+     * the entity that was being cloned.
+     * @param {object} duplicatedIdsMap - A dictionary with guid-entity values that contains the
+     * entities that were cloned.
      * @private
-     * @name pc.ScriptComponent#resolveDuplicatedEntityReferenceProperties
-     * @description When an entity is cloned and it has entity script attributes that point
-     * to other entities in the same subtree that is cloned, then we want the new script attributes to point
-     * at the cloned entities. This method remaps the script attributes for this entity and it assumes that this
-     * entity is the result of the clone operation.
-     * @param {pc.ScriptComponent} oldScriptComponent - The source script component that belongs to the entity that was being cloned.
-     * @param {object} duplicatedIdsMap - A dictionary with guid-entity values that contains the entities that were cloned.
      */
     resolveDuplicatedEntityReferenceProperties(oldScriptComponent, duplicatedIdsMap) {
-        var newScriptComponent = this.entity.script;
-        var i, j;
+        const newScriptComponent = this.entity.script;
 
         // for each script in the old component
-        for (var scriptName in oldScriptComponent._scriptsIndex) {
+        for (const scriptName in oldScriptComponent._scriptsIndex) {
             // get the script type from the script registry
-            var scriptType = this.system.app.scripts.get(scriptName);
-            if (! scriptType) {
+            const scriptType = this.system.app.scripts.get(scriptName);
+            if (!scriptType) {
                 continue;
             }
 
             // get the script from the component's index
-            var script = oldScriptComponent._scriptsIndex[scriptName];
-            if (! script || ! script.instance) {
+            const script = oldScriptComponent._scriptsIndex[scriptName];
+            if (!script || !script.instance) {
                 continue;
             }
 
@@ -809,24 +967,25 @@ class ScriptComponent extends Component {
             // otherwise it means that the attributes have already been initialized
             // so convert the new guid to an entity
             // and put it in the new attributes
-            var newAttributesRaw = newScriptComponent[scriptName].__attributesRaw;
-            var newAttributes = newScriptComponent[scriptName].__attributes;
-            if (! newAttributesRaw && ! newAttributes) {
+            const newAttributesRaw = newScriptComponent[scriptName].__attributesRaw ?? newScriptComponent._attributeDataMap.get(scriptName);
+            const newAttributes = newScriptComponent[scriptName].__attributes;
+            if (!newAttributesRaw && !newAttributes) {
                 continue;
             }
 
             // if we are using attributesRaw then use the guid otherwise use the entity
-            var useGuid = !!newAttributesRaw;
+            const useGuid = !!newAttributesRaw;
 
             // get the old script attributes from the instance
-            var oldAttributes = script.instance.__attributes;
-            for (var attributeName in oldAttributes) {
-                if (! oldAttributes[attributeName]) {
+            const oldAttributes = script.instance.__attributes ?? newScriptComponent._attributeDataMap.get(scriptName);
+            for (const attributeName in oldAttributes) {
+                if (!oldAttributes[attributeName]) {
                     continue;
                 }
 
                 // get the attribute definition from the script type
-                var attribute = scriptType.attributes.get(attributeName);
+                const attribute = scriptType.attributes?.get(attributeName) ??
+                    this.system.app.scripts.getSchema(scriptName)?.attributes?.[attributeName];
                 if (!attribute) {
                     continue;
                 }
@@ -843,17 +1002,17 @@ class ScriptComponent extends Component {
                     );
                 } else if (attribute.type === 'json' && Array.isArray(attribute.schema)) {
                     // json attributes
-                    var oldValue = oldAttributes[attributeName];
-                    var newJsonValue = (newAttributesRaw ? newAttributesRaw[attributeName] : newAttributes[attributeName]);
+                    const oldValue = oldAttributes[attributeName];
+                    const newJsonValue = (newAttributesRaw ? newAttributesRaw[attributeName] : newAttributes[attributeName]);
 
-                    for (i = 0; i < attribute.schema.length; i++) {
-                        var field = attribute.schema[i];
+                    for (let i = 0; i < attribute.schema.length; i++) {
+                        const field = attribute.schema[i];
                         if (field.type !== 'entity') {
                             continue;
                         }
 
                         if (attribute.array) {
-                            for (j = 0; j < oldValue.length; j++) {
+                            for (let j = 0; j < oldValue.length; j++) {
                                 this._resolveEntityScriptAttribute(
                                     field,
                                     field.name,
@@ -863,7 +1022,6 @@ class ScriptComponent extends Component {
                                     duplicatedIdsMap
                                 );
                             }
-
                         } else {
                             this._resolveEntityScriptAttribute(
                                 field,
@@ -880,26 +1038,23 @@ class ScriptComponent extends Component {
         }
     }
 
-
-    /* eslint-disable jsdoc/no-undefined-types */
     /**
-     * @function
-     * @name pc.ScriptComponent#move
-     * @description Move script instance to different position to alter update order of scripts within entity.
-     * @param {string|Class<pc.ScriptType>} nameOrType - The name or type of {@link pc.ScriptType}.
+     * Move script instance to different position to alter update order of scripts within entity.
+     *
+     * @param {string|typeof ScriptType} nameOrType - The name or type of {@link ScriptType}.
      * @param {number} ind - New position index.
      * @returns {boolean} If it was successfully moved.
      * @example
      * entity.script.move('playerController', 0);
      */
-    /* eslint-enable jsdoc/no-undefined-types */
     move(nameOrType, ind) {
-        var len = this._scripts.length;
-        if (ind >= len || ind < 0)
+        const len = this._scripts.length;
+        if (ind >= len || ind < 0) {
             return false;
+        }
 
-        var scriptType = nameOrType;
-        var scriptName = nameOrType;
+        let scriptType = nameOrType;
+        let scriptName = nameOrType;
 
         if (typeof scriptName !== 'string') {
             scriptName = nameOrType.__name;
@@ -907,18 +1062,21 @@ class ScriptComponent extends Component {
             scriptType = null;
         }
 
-        var scriptData = this._scriptsIndex[scriptName];
-        if (!scriptData || !scriptData.instance)
+        const scriptData = this._scriptsIndex[scriptName];
+        if (!scriptData || !scriptData.instance) {
             return false;
+        }
 
         // if script type specified, make sure instance of said type
-        var scriptInstance = scriptData.instance;
-        if (scriptType && !(scriptInstance instanceof scriptType))
+        const scriptInstance = scriptData.instance;
+        if (scriptType && !(scriptInstance instanceof scriptType)) {
             return false;
+        }
 
-        var indOld = this._scripts.indexOf(scriptInstance);
-        if (indOld === -1 || indOld === ind)
+        const indOld = this._scripts.indexOf(scriptInstance);
+        if (indOld === -1 || indOld === ind) {
             return false;
+        }
 
         // move script to another position
         this._scripts.splice(ind, 0, this._scripts.splice(indOld, 1)[0]);
@@ -929,63 +1087,9 @@ class ScriptComponent extends Component {
         this._postUpdateList.sort();
 
         this.fire('move', scriptName, scriptInstance, ind, indOld);
-        this.fire('move:' + scriptName, scriptInstance, ind, indOld);
+        this.fire(`move:${scriptName}`, scriptInstance, ind, indOld);
 
         return true;
-    }
-
-    get enabled() {
-        return this._enabled;
-    }
-
-    set enabled(value) {
-        var oldValue = this._enabled;
-        this._enabled = value;
-        this.fire('set', 'enabled', oldValue, value);
-    }
-
-    get scripts() {
-        return this._scripts;
-    }
-
-    set scripts(value) {
-        this._scriptsData = value;
-
-        for (var key in value) {
-            if (!value.hasOwnProperty(key))
-                continue;
-
-            var script = this._scriptsIndex[key];
-            if (script) {
-                // existing script
-
-                // enabled
-                if (typeof value[key].enabled === 'boolean')
-                    script.enabled = !!value[key].enabled;
-
-                // attributes
-                if (typeof value[key].attributes === 'object') {
-                    for (var attr in value[key].attributes) {
-                        if (ScriptAttributes.reservedNames.has(attr))
-                            continue;
-
-                        if (!script.__attributes.hasOwnProperty(attr)) {
-                            // new attribute
-                            var scriptType = this.system.app.scripts.get(key);
-                            if (scriptType)
-                                scriptType.attributes.add(attr, { });
-                        }
-
-                        // update attribute
-                        script[attr] = value[key].attributes[attr];
-                    }
-                }
-            } else {
-                // TODO scripts2
-                // new script
-                console.log(this.order);
-            }
-        }
     }
 }
 

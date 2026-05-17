@@ -1,28 +1,30 @@
-import { now } from  '../../core/time.js';
-
-import { Vec3 } from '../../math/vec3.js';
-import { Mat4 } from '../../math/mat4.js';
-
-import { BoundingBox } from '../../shape/bounding-box.js';
-
+import { Debug } from '../../core/debug.js';
+import { now } from '../../core/time.js';
+import { Mat3 } from '../../core/math/mat3.js';
+import { BoundingBox } from '../../core/shape/bounding-box.js';
 import {
-    PRIMITIVE_TRIANGLES, PRIMITIVE_TRIFAN,
+    PRIMITIVE_TRIANGLES, PRIMITIVE_TRIFAN, PRIMITIVE_TRISTRIP,
     SEMANTIC_POSITION, SEMANTIC_NORMAL, SEMANTIC_TANGENT, SEMANTIC_BLENDINDICES,
     TYPE_FLOAT32,
     typedArrayIndexFormats, typedArrayTypes, typedArrayTypesByteSize
-} from '../../graphics/constants.js';
-
-import { shaderChunks } from '../../graphics/program-lib/chunks/chunks.js';
-
+} from '../../platform/graphics/constants.js';
 import { SPRITE_RENDERMODE_SIMPLE } from '../constants.js';
 import { Mesh } from '../mesh.js';
 import { MeshInstance } from '../mesh-instance.js';
-import { Model } from '../model.js';
-
 import { Batch } from './batch.js';
 import { BatchGroup } from './batch-group.js';
 import { SkinBatchInstance } from './skin-batch-instance.js';
 
+/**
+ * @import { Entity } from '../../framework/entity.js'
+ * @import { GraphicsDevice } from '../../platform/graphics/graphics-device.js'
+ * @import { Scene } from '../scene.js'
+ */
+
+const _triFanIndices = [0, 1, 3, 2, 3, 1];
+const _triStripIndices = [0, 1, 3, 0, 3, 2];
+
+const mat3 = new Mat3();
 
 function paramsIdentical(a, b) {
     if (a && !b) return false;
@@ -32,7 +34,7 @@ function paramsIdentical(a, b) {
     if (a === b) return true;
     if (a instanceof Float32Array && b instanceof Float32Array) {
         if (a.length !== b.length) return false;
-        for (var i = 0; i < a.length; i++) {
+        for (let i = 0; i < a.length; i++) {
             if (a[i] !== b[i]) return false;
         }
         return true;
@@ -41,52 +43,36 @@ function paramsIdentical(a, b) {
 }
 
 function equalParamSets(params1, params2) {
-    var param;
-    for (param in params1) { // compare A -> B
-        if (params1.hasOwnProperty(param) && !paramsIdentical(params1[param], params2[param]))
+    for (const param in params1) { // compare A -> B
+        if (params1.hasOwnProperty(param) && !paramsIdentical(params1[param], params2[param])) {
             return false;
+        }
     }
-    for (param in params2) { // compare B -> A
-        if (params2.hasOwnProperty(param) && !paramsIdentical(params2[param], params1[param]))
+    for (const param in params2) { // compare B -> A
+        if (params2.hasOwnProperty(param) && !paramsIdentical(params2[param], params1[param])) {
             return false;
+        }
     }
     return true;
 }
 
-function equalLightLists(lightList1, lightList2) {
-    var k;
-    for (k = 0; k < lightList1.length; k++) {
-        if (lightList2.indexOf(lightList1[k]) < 0)
-            return false;
-    }
-    for (k = 0; k < lightList2.length; k++) {
-        if (lightList1.indexOf(lightList2[k]) < 0)
-            return false;
-    }
-    return  true;
-}
-
-var worldMatX = new Vec3();
-var worldMatY = new Vec3();
-var worldMatZ = new Vec3();
 function getScaleSign(mi) {
-    var wt = mi.node.worldTransform;
-    wt.getX(worldMatX);
-    wt.getY(worldMatY);
-    wt.getZ(worldMatZ);
-    worldMatX.cross(worldMatX, worldMatY);
-    return worldMatX.dot(worldMatZ) >= 0 ? 1 : -1;
+    return mi.node.worldTransform.scaleSign;
 }
 
 /**
- * @class
- * @name pc.BatchManager
- * @classdesc Glues many mesh instances into a single one for better performance.
- * @param {pc.GraphicsDevice} device - The graphics device used by the batch manager.
- * @param {pc.Entity} root - The entity under which batched models are added.
- * @param {pc.Scene} scene - The scene that the batch manager affects.
+ * Glues many mesh instances into a single one for better performance.
+ *
+ * @category Graphics
  */
 class BatchManager {
+    /**
+     * Create a new BatchManager instance.
+     *
+     * @param {GraphicsDevice} device - The graphics device used by the batch manager.
+     * @param {Entity} root - The entity under which batched models are added.
+     * @param {Scene} scene - The scene that the batch manager affects.
+     */
     constructor(device, root, scene) {
         this.device = device;
         this.rootNode = root;
@@ -98,7 +84,7 @@ class BatchManager {
         this._batchList = [];
         this._dirtyGroups = [];
 
-        // #ifdef PROFILER
+        // #if _PROFILER
         this._stats = {
             createTime: 0,
             updateLastFrameTime: 0
@@ -106,8 +92,7 @@ class BatchManager {
         // #endif
     }
 
-    // TODO: rename destroy() to something else and rename this to destroy
-    destroyManager() {
+    destroy() {
         this.device = null;
         this.rootNode = null;
         this.scene = null;
@@ -117,17 +102,18 @@ class BatchManager {
     }
 
     /**
-     * @function
-     * @name pc.BatchManager#addGroup
-     * @description Adds new global batch group.
+     * Adds new global batch group.
+     *
      * @param {string} name - Custom name.
-     * @param {boolean} dynamic - Is this batch group dynamic? Will these objects move/rotate/scale after being batched?
-     * @param {number} maxAabbSize - Maximum size of any dimension of a bounding box around batched objects.
-     * {@link pc.BatchManager#prepare} will split objects into local groups based on this size.
-     * @param {number} [id] - Optional custom unique id for the group (will be generated automatically otherwise).
-     * @param {number[]} [layers] - Optional layer ID array. Default is [pc.LAYERID_WORLD]. The whole batch group will
-     * belong to these layers. Layers of source models will be ignored.
-     * @returns {pc.BatchGroup} Group object.
+     * @param {boolean} dynamic - Is this batch group dynamic? Will these objects move/rotate/scale
+     * after being batched?
+     * @param {number} maxAabbSize - Maximum size of any dimension of a bounding box around batched
+     * objects. {@link prepare} will split objects into local groups based on this size.
+     * @param {number} [id] - Optional custom unique id for the group (will be generated
+     * automatically otherwise).
+     * @param {number[]} [layers] - Optional layer ID array. Default is [{@link LAYERID_WORLD}].
+     * The whole batch group will belong to these layers. Layers of source models will be ignored.
+     * @returns {BatchGroup} Group object.
      */
     addGroup(name, dynamic, maxAabbSize, id, layers) {
         if (id === undefined) {
@@ -136,41 +122,36 @@ class BatchManager {
         }
 
         if (this._batchGroups[id]) {
-            // #ifdef DEBUG
-            console.error("batch group with id " + id + " already exists");
-            // #endif
-            return;
+            Debug.error(`Batch group with id ${id} already exists.`);
+            return undefined;
         }
 
-        var group;
-        this._batchGroups[id] = group = new BatchGroup(id, name, dynamic, maxAabbSize, layers);
+        const group = new BatchGroup(id, name, dynamic, maxAabbSize, layers);
+        this._batchGroups[id] = group;
 
         return group;
     }
 
     /**
-     * @function
-     * @name pc.BatchManager#removeGroup
-     * @description Remove global batch group by id.
-     * Note, this traverses the entire scene graph and clears the batch group id from all components.
+     * Remove global batch group by id. Note, this traverses the entire scene graph and clears the
+     * batch group id from all components.
+     *
      * @param {number} id - Batch Group ID.
      */
     removeGroup(id) {
         if (!this._batchGroups[id]) {
-            // #ifdef DEBUG
-            console.error("batch group with id " + id + " doesn't exist");
-            // #endif
+            Debug.error(`Batch group with id ${id} doesn't exist.`);
             return;
         }
 
         // delete batches with matching id
-        var newBatchList = [];
-        for (var i = 0; i < this._batchList.length; i++) {
-            if (this._batchList[i].batchGroupId !== id) {
+        const newBatchList = [];
+        for (let i = 0; i < this._batchList.length; i++) {
+            if (this._batchList[i].batchGroupId === id) {
+                this.destroyBatch(this._batchList[i]);
+            } else {
                 newBatchList.push(this._batchList[i]);
-                continue;
             }
-            this.destroy(this._batchList[i]);
         }
         this._batchList = newBatchList;
         this._removeModelsFromBatchGroup(this.rootNode, id);
@@ -179,11 +160,10 @@ class BatchManager {
     }
 
     /**
-     * @function
-     * @name pc.BatchManager#markGroupDirty
-     * @description Mark a specific batch group as dirty. Dirty groups are re-batched before the next frame is rendered.
-     * Note, re-batching a group is a potentially expensive operation.
-     * @param  {number} id - Batch Group ID to mark as dirty.
+     * Mark a specific batch group as dirty. Dirty groups are re-batched before the next frame is
+     * rendered. Note, re-batching a group is a potentially expensive operation.
+     *
+     * @param {number} id - Batch Group ID to mark as dirty.
      */
     markGroupDirty(id) {
         if (this._dirtyGroups.indexOf(id) < 0) {
@@ -192,15 +172,15 @@ class BatchManager {
     }
 
     /**
-     * @function
-     * @name pc.BatchManager#getGroupByName
-     * @description Retrieves a {@link pc.BatchGroup} object with a corresponding name, if it exists, or null otherwise.
+     * Retrieves a {@link BatchGroup} object with a corresponding name, if it exists, or null
+     * otherwise.
+     *
      * @param {string} name - Name.
-     * @returns {pc.BatchGroup} Group object.
+     * @returns {BatchGroup|null} The batch group matching the name or null if not found.
      */
     getGroupByName(name) {
-        var groups = this._batchGroups;
-        for (var group in groups) {
+        const groups = this._batchGroups;
+        for (const group in groups) {
             if (!groups.hasOwnProperty(group)) continue;
             if (groups[group].name === name) {
                 return groups[group];
@@ -210,18 +190,28 @@ class BatchManager {
     }
 
     /**
+     * Retrieves a {@link BatchGroup} object with a corresponding id, if it exists, or null
+     * otherwise.
+     *
+     * @param {number} id - The batch group id.
+     * @returns {BatchGroup|null} The batch group matching the id or null if not found.
+     */
+    getGroupById(id) {
+        return this._batchGroups[id] ?? null;
+    }
+
+    /**
+     * Return a list of all {@link Batch} objects that belong to the Batch Group supplied.
+     *
+     * @param {number} batchGroupId - The id of the batch group.
+     * @returns {Batch[]} A list of batches that are used to render the batch group.
      * @private
-     * @function
-     * @name pc.BatchManager#getBatches
-     * @description  Return a list of all {@link pc.Batch} objects that belong to the Batch Group supplied.
-     * @param  {number} batchGroupId - The id of the batch group.
-     * @returns {pc.Batch[]} A list of batches that are used to render the batch group.
      */
     getBatches(batchGroupId) {
-        var results = [];
-        var len = this._batchList.length;
-        for (var i = 0; i < len; i++) {
-            var batch = this._batchList[i];
+        const results = [];
+        const len = this._batchList.length;
+        for (let i = 0; i < len; i++) {
+            const batch = this._batchList[i];
             if (batch.batchGroupId === batchGroupId) {
                 results.push(batch);
             }
@@ -247,63 +237,73 @@ class BatchManager {
             node.sprite.batchGroupId = -1;
         }
 
-        for (var i = 0; i < node._children.length; i++) {
+        for (let i = 0; i < node._children.length; i++) {
             this._removeModelsFromBatchGroup(node._children[i], id);
         }
     }
 
     insert(type, groupId, node) {
-        var group = this._batchGroups[groupId];
+        const group = this._batchGroups[groupId];
+        Debug.assert(group, `Invalid batch ${groupId} insertion with node: "${node.name}"`);
+
         if (group) {
             if (group._obj[type].indexOf(node) < 0) {
                 group._obj[type].push(node);
                 this.markGroupDirty(groupId);
             }
-        } else {
-            // #ifdef DEBUG
-            console.warn('Invalid batch ' + groupId + ' insertion');
-            // #endif
         }
     }
 
     remove(type, groupId, node) {
-        var group = this._batchGroups[groupId];
+        const group = this._batchGroups[groupId];
+        Debug.assert(group, `Invalid batch ${groupId} removal with node: "${node.name}"`);
+
         if (group) {
-            var idx = group._obj[type].indexOf(node);
+            const idx = group._obj[type].indexOf(node);
             if (idx >= 0) {
                 group._obj[type].splice(idx, 1);
                 this.markGroupDirty(groupId);
             }
-        } else {
-            // #ifdef DEBUG
-            console.warn('Invalid batch ' + groupId + ' insertion');
-            // #endif
         }
+    }
+
+    /**
+     * Filter out mesh instances that have skin or morph, as these are not supported by batching.
+     * If any mesh instance has skin/morph, the entire set is excluded.
+     *
+     * @param {MeshInstance[]} meshInstances - The mesh instances to filter.
+     * @param {string} nodeName - The node name for warning messages.
+     * @returns {MeshInstance[]|null} The mesh instances if none have skin/morph, or null if any do.
+     * @private
+     */
+    _filterBatchableInstances(meshInstances, nodeName) {
+        let hasUnsupported = false;
+        let hasSupported = false;
+        for (let i = 0; i < meshInstances.length; i++) {
+            if (meshInstances[i].skinInstance || meshInstances[i].morphInstance) {
+                hasUnsupported = true;
+            } else {
+                hasSupported = true;
+            }
+        }
+
+        if (hasUnsupported) {
+            if (hasSupported) {
+                Debug.warnOnce(`BatchManager: Some mesh instances on entity "${nodeName}" have skin/morph and the whole entity will be excluded from batching.`);
+            }
+            return null;
+        }
+
+        return meshInstances;
     }
 
     _extractRender(node, arr, group, groupMeshInstances) {
         if (node.render) {
-
-            if (node.render.isStatic) {
-                // static mesh instances can be in both drawCall array with _staticSource linking to original
-                // and in the original array as well, if no triangle splitting was done
-                var i, drawCalls = this.scene.drawCalls;
-                var nodeMeshInstances = node.render.meshInstances;
-                for (i = 0; i < drawCalls.length; i++) {
-                    if (!drawCalls[i]._staticSource) continue;
-                    if (nodeMeshInstances.indexOf(drawCalls[i]._staticSource) < 0) continue;
-                    arr.push(drawCalls[i]);
-                }
-                for (i = 0; i < nodeMeshInstances.length; i++) {
-                    if (drawCalls.indexOf(nodeMeshInstances[i]) >= 0) {
-                        arr.push(nodeMeshInstances[i]);
-                    }
-                }
-            } else {
-                arr = groupMeshInstances[node.render.batchGroupId] = arr.concat(node.render.meshInstances);
+            const valid = this._filterBatchableInstances(node.render.meshInstances, node.name);
+            if (valid) {
+                arr = groupMeshInstances[node.render.batchGroupId] = arr.concat(valid);
+                node.render.removeFromLayers();
             }
-
-            node.render.removeFromLayers();
         }
 
         return arr;
@@ -311,31 +311,11 @@ class BatchManager {
 
     _extractModel(node, arr, group, groupMeshInstances) {
         if (node.model && node.model.model) {
-            var i;
-            if (node.model.isStatic) {
-                // static mesh instances can be in both drawCall array with _staticSource linking to original
-                // and in the original array as well, if no triangle splitting was done
-                var drawCalls = this.scene.drawCalls;
-                var nodeMeshInstances = node.model.meshInstances;
-                for (i = 0; i < drawCalls.length; i++) {
-                    if (!drawCalls[i]._staticSource) continue;
-                    if (nodeMeshInstances.indexOf(drawCalls[i]._staticSource) < 0) continue;
-                    arr.push(drawCalls[i]);
-                }
-                for (i = 0; i < nodeMeshInstances.length; i++) {
-                    if (drawCalls.indexOf(nodeMeshInstances[i]) >= 0) {
-                        arr.push(nodeMeshInstances[i]);
-                    }
-                }
-            } else {
-                arr = groupMeshInstances[node.model.batchGroupId] = arr.concat(node.model.meshInstances);
+            const valid = this._filterBatchableInstances(node.model.meshInstances, node.name);
+            if (valid) {
+                arr = groupMeshInstances[node.model.batchGroupId] = arr.concat(valid);
+                node.model.removeModelFromLayers();
             }
-
-            node.model.removeModelFromLayers();
-
-            // #ifdef DEBUG
-            node.model._batchGroup = group;
-            // #endif
         }
 
         return arr;
@@ -343,7 +323,7 @@ class BatchManager {
 
     _extractElement(node, arr, group) {
         if (!node.element) return;
-        var valid = false;
+        let valid = false;
         if (node.element._text && node.element._text._model.meshInstances.length > 0) {
             arr.push(node.element._text._model.meshInstances[0]);
             node.element.removeModelFromLayers(node.element._text._model);
@@ -367,9 +347,6 @@ class BatchManager {
 
         if (valid) {
             group._ui = true;
-            // #ifdef DEBUG
-            node.element._batchGroup = group;
-            // #endif
         }
     }
 
@@ -378,48 +355,46 @@ class BatchManager {
     // Fill the `groupMeshInstances` with all the mesh instances to be included in the batch groups,
     // indexed by batch group id.
     _collectAndRemoveMeshInstances(groupMeshInstances, groupIds) {
-        var node, group, arr, id;
-        for (var g = 0; g < groupIds.length; g++) {
-            id = groupIds[g];
-            group = this._batchGroups[id];
+        for (let g = 0; g < groupIds.length; g++) {
+            const id = groupIds[g];
+            const group = this._batchGroups[id];
             if (!group) continue;
-            arr = groupMeshInstances[id];
+            let arr = groupMeshInstances[id];
             if (!arr) arr = groupMeshInstances[id] = [];
 
-            for (var m = 0; m < group._obj.model.length; m++) {
+            for (let m = 0; m < group._obj.model.length; m++) {
                 arr = this._extractModel(group._obj.model[m], arr, group, groupMeshInstances);
             }
 
-            for (var r = 0; r < group._obj.render.length; r++) {
+            for (let r = 0; r < group._obj.render.length; r++) {
                 arr = this._extractRender(group._obj.render[r], arr, group, groupMeshInstances);
             }
 
-            for (var e = 0; e < group._obj.element.length; e++) {
+            for (let e = 0; e < group._obj.element.length; e++) {
                 this._extractElement(group._obj.element[e], arr, group);
             }
 
-            for (var s = 0; s < group._obj.sprite.length; s++) {
-                node = group._obj.sprite[s];
+            for (let s = 0; s < group._obj.sprite.length; s++) {
+                const node = group._obj.sprite[s];
                 if (node.sprite && node.sprite._meshInstance &&
                     (group.dynamic || node.sprite.sprite._renderMode === SPRITE_RENDERMODE_SIMPLE)) {
                     arr.push(node.sprite._meshInstance);
-                    node.sprite.removeModelFromLayers();
+                    node.sprite.removeFromLayers();
                     group._sprite = true;
-                    node.sprite._batchGroup = group;
                 }
             }
         }
     }
 
     /**
-     * @function
-     * @name pc.BatchManager#generate
-     * @description Destroys all batches and creates new based on scene models. Hides original models. Called by engine automatically on app start, and if batchGroupIds on models are changed.
-     * @param {number[]} [groupIds] - Optional array of batch group IDs to update. Otherwise all groups are updated.
+     * Destroys all batches and creates new based on scene models. Hides original models. Called by
+     * engine automatically on app start, and if batchGroupIds on models are changed.
+     *
+     * @param {number[]} [groupIds] - Optional array of batch group IDs to update. Otherwise all
+     * groups are updated.
      */
     generate(groupIds) {
-        var i, j;
-        var groupMeshInstances = {};
+        const groupMeshInstances = {};
 
         if (!groupIds) {
             // Full scene
@@ -427,13 +402,13 @@ class BatchManager {
         }
 
         // delete old batches with matching batchGroupId
-        var newBatchList = [];
-        for (i = 0; i < this._batchList.length; i++) {
+        const newBatchList = [];
+        for (let i = 0; i < this._batchList.length; i++) {
             if (groupIds.indexOf(this._batchList[i].batchGroupId) < 0) {
                 newBatchList.push(this._batchList[i]);
                 continue;
             }
-            this.destroy(this._batchList[i]);
+            this.destroyBatch(this._batchList[i]);
         }
         this._batchList = newBatchList;
 
@@ -443,34 +418,29 @@ class BatchManager {
         if (groupIds === this._dirtyGroups) {
             this._dirtyGroups.length = 0;
         } else {
-            var newDirtyGroups = [];
-            for (i = 0; i < this._dirtyGroups.length; i++) {
+            const newDirtyGroups = [];
+            for (let i = 0; i < this._dirtyGroups.length; i++) {
                 if (groupIds.indexOf(this._dirtyGroups[i]) < 0) newDirtyGroups.push(this._dirtyGroups[i]);
             }
             this._dirtyGroups = newDirtyGroups;
         }
 
-        var group, lists, groupData, batch;
-        for (var groupId in groupMeshInstances) {
+        let group, lists, groupData, batch;
+        for (const groupId in groupMeshInstances) {
             if (!groupMeshInstances.hasOwnProperty(groupId)) continue;
             group = groupMeshInstances[groupId];
 
             groupData = this._batchGroups[groupId];
             if (!groupData) {
-                // #ifdef DEBUG
-                console.error("batch group " + groupId + " not found");
-                // #endif
+                Debug.error(`batch group ${groupId} not found`);
                 continue;
             }
 
             lists = this.prepare(group, groupData.dynamic, groupData.maxAabbSize, groupData._ui || groupData._sprite);
-            for (i = 0; i < lists.length; i++) {
+            for (let i = 0; i < lists.length; i++) {
                 batch = this.create(lists[i], groupData.dynamic, parseInt(groupId, 10));
-                if (!batch) continue;
-                for (j = 0; j < groupData.layers.length; j++) {
-                    var layer = this.scene.layers.getLayerById(groupData.layers[j]);
-                    if (layer)
-                        layer.addMeshInstances(batch.model.meshInstances);
+                if (batch) {
+                    batch.addToLayers(this.scene, groupData.layers);
                 }
             }
         }
@@ -478,51 +448,56 @@ class BatchManager {
 
 
     /**
-     * @function
-     * @name pc.BatchManager#prepare
-     * @description Takes a list of mesh instances to be batched and sorts them into lists one for each draw call.
-     * The input list will be split, if:
+     * Takes a list of mesh instances to be batched and sorts them into lists one for each draw
+     * call. The input list will be split, if:
      *
-     * * Mesh instances use different materials.
-     * * Mesh instances have different parameters (e.g. lightmaps or static lights).
-     * * Mesh instances have different shader defines (shadow receiving, being aligned to screen space, etc).
-     * * Too many vertices for a single batch (65535 is maximum).
-     * * Too many instances for a single batch (hardware-dependent, expect 128 on low-end and 1024 on high-end).
-     * * Bounding box of a batch is larger than maxAabbSize in any dimension.
+     * - Mesh instances use different materials.
+     * - Mesh instances have different parameters (e.g. lightmaps or static lights).
+     * - Mesh instances have different shader defines (shadow receiving, being aligned to screen
+     * space, etc).
+     * - Too many vertices for a single batch (65535 is maximum).
+     * - Too many instances for a single batch (hardware-dependent, expect 128 on low-end and 1024
+     * on high-end).
+     * - Bounding box of a batch is larger than maxAabbSize in any dimension.
+     * - Mesh instances differ in shadow casting ({@link MeshInstance#castShadow}) or directional
+     * shadow cascade mask ({@link MeshInstance#shadowCascadeMask}).
      *
-     * @param {pc.MeshInstance[]} meshInstances - Input list of mesh instances
-     * @param {boolean} dynamic - Are we preparing for a dynamic batch? Instance count will matter then (otherwise not).
-     * @param {number} maxAabbSize - Maximum size of any dimension of a bounding box around batched objects.
+     * @param {MeshInstance[]} meshInstances - Input list of mesh instances
+     * @param {boolean} dynamic - Are we preparing for a dynamic batch? Instance count will matter
+     * then (otherwise not).
+     * @param {number} maxAabbSize - Maximum size of any dimension of a bounding box around batched
+     * objects.
      * @param {boolean} translucent - Are we batching UI elements or sprites
-     * This is useful to keep a balance between the number of draw calls and the number of drawn triangles, because smaller batches can be hidden when not visible in camera.
-     * @returns {pc.MeshInstance[][]} An array of arrays of mesh instances, each valid to pass to {@link pc.BatchManager#create}.
+     * This is useful to keep a balance between the number of draw calls and the number of drawn
+     * triangles, because smaller batches can be hidden when not visible in camera.
+     * @returns {MeshInstance[][]} An array of arrays of mesh instances, each valid to pass to
+     * {@link create}.
      */
     prepare(meshInstances, dynamic, maxAabbSize = Number.POSITIVE_INFINITY, translucent) {
         if (meshInstances.length === 0) return [];
-        var halfMaxAabbSize = maxAabbSize * 0.5;
-        var maxInstanceCount = this.device.supportsBoneTextures ? 1024 : this.device.boneLimit;
+        const halfMaxAabbSize = maxAabbSize * 0.5;
+        const maxInstanceCount = 1024;
 
-        // maximum number of vertices that can be used in batch depends on 32bit index buffer support (do this for non-indexed as well,
+        // maximum number of vertices that can be used in batch (do this for non-indexed as well,
         // as in some cases (UI elements) non-indexed geometry gets batched into indexed)
-        var maxNumVertices = this.device.extUintElement ? 0xffffffff : 0xffff;
+        const maxNumVertices = 0xffffffff;
 
-        var material, layer, vertCount, params, lightList, defs, stencil, staticLights, scaleSign, drawOrder, indexed, vertexFormatBatchingHash;
-        var aabb = new BoundingBox();
-        var testAabb = new BoundingBox();
-        var skipTranslucentAabb = null;
-        var mi, sf;
+        const aabb = new BoundingBox();
+        const testAabb = new BoundingBox();
+        let skipTranslucentAabb = null;
+        let sf;
 
-        var lists = [];
-        var i, j = 0;
+        const lists = [];
+        let j = 0;
         if (translucent) {
-            meshInstances.sort(function (a, b) {
+            meshInstances.sort((a, b) => {
                 return a.drawOrder - b.drawOrder;
             });
         }
-        var meshInstancesLeftA = meshInstances;
-        var meshInstancesLeftB;
+        let meshInstancesLeftA = meshInstances;
+        let meshInstancesLeftB;
 
-        var skipMesh = translucent ? function (mi) {
+        const skipMesh = translucent ? function (mi) {
             if (skipTranslucentAabb) {
                 skipTranslucentAabb.add(mi.aabb);
             } else {
@@ -536,22 +511,23 @@ class BatchManager {
         while (meshInstancesLeftA.length > 0) {
             lists[j] = [meshInstancesLeftA[0]];
             meshInstancesLeftB = [];
-            material = meshInstancesLeftA[0].material;
-            layer = meshInstancesLeftA[0].layer;
-            defs = meshInstancesLeftA[0]._shaderDefs;
-            params = meshInstancesLeftA[0].parameters;
-            stencil = meshInstancesLeftA[0].stencilFront;
-            lightList = meshInstancesLeftA[0]._staticLightList;
-            vertCount = meshInstancesLeftA[0].mesh.vertexBuffer.getNumVertices();
-            drawOrder = meshInstancesLeftA[0].drawOrder;
+            const material = meshInstancesLeftA[0].material;
+            const layer = meshInstancesLeftA[0].layer;
+            const defs = meshInstancesLeftA[0]._shaderDefs;
+            const params = meshInstancesLeftA[0].parameters;
+            const stencil = meshInstancesLeftA[0].stencilFront;
+            let vertCount = meshInstancesLeftA[0].mesh.vertexBuffer.getNumVertices();
+            const drawOrder = meshInstancesLeftA[0].drawOrder;
             aabb.copy(meshInstancesLeftA[0].aabb);
-            scaleSign = getScaleSign(meshInstancesLeftA[0]);
-            vertexFormatBatchingHash = meshInstancesLeftA[0].mesh.vertexBuffer.format.batchingHash;
-            indexed = meshInstancesLeftA[0].mesh.primitive[0].indexed;
+            const scaleSign = getScaleSign(meshInstancesLeftA[0]);
+            const vertexFormatBatchingHash = meshInstancesLeftA[0].mesh.vertexBuffer.format.batchingHash;
+            const indexed = meshInstancesLeftA[0].mesh.primitive[0].indexed;
+            const castShadow = meshInstancesLeftA[0].castShadow;
+            const shadowCascadeMask = meshInstancesLeftA[0].shadowCascadeMask;
             skipTranslucentAabb = null;
 
-            for (i = 1; i < meshInstancesLeftA.length; i++) {
-                mi = meshInstancesLeftA[i];
+            for (let i = 1; i < meshInstancesLeftA.length; i++) {
+                const mi = meshInstancesLeftA[i];
 
                 // Split by instance number
                 if (dynamic && lists[j].length >= maxInstanceCount) {
@@ -580,30 +556,25 @@ class BatchManager {
                 }
                 // Split stencil mask (UI elements), both front and back expected to be the same
                 if (stencil) {
-                    if (!(sf = mi.stencilFront) || stencil.func != sf.func || stencil.zpass != sf.zpass) {
+                    if (!(sf = mi.stencilFront) || stencil.func !== sf.func || stencil.zpass !== sf.zpass) {
                         skipMesh(mi);
                         continue;
                     }
                 }
                 // Split by negative scale
-                if (scaleSign != getScaleSign(mi)) {
+                if (scaleSign !== getScaleSign(mi)) {
+                    skipMesh(mi);
+                    continue;
+                }
+
+                // Split by shadow casting — the batched MeshInstance exposes a single castShadow flag
+                if (castShadow !== mi.castShadow || shadowCascadeMask !== mi.shadowCascadeMask) {
                     skipMesh(mi);
                     continue;
                 }
 
                 // Split by parameters
                 if (!equalParamSets(params, mi.parameters)) {
-                    skipMesh(mi);
-                    continue;
-                }
-                // Split by static light list
-                staticLights = mi._staticLightList;
-                if (lightList && staticLights) {
-                    if (!equalLightLists(lightList, staticLights)) {
-                        skipMesh(mi);
-                        continue;
-                    }
-                } else if (lightList || staticLights) { // Split by static/non static
                     skipMesh(mi);
                     continue;
                 }
@@ -625,50 +596,33 @@ class BatchManager {
         return lists;
     }
 
-    /**
-     * @function
-     * @name pc.BatchManager#create
-     * @description Takes a mesh instance list that has been prepared by {@link pc.BatchManager#prepare}, and returns a {@link pc.Batch} object. This method assumes that all mesh instances provided can be rendered in a single draw call.
-     * @param {pc.MeshInstance[]} meshInstances - Input list of mesh instances.
-     * @param {boolean} dynamic - Is it a static or dynamic batch? Will objects be transformed after batching?
-     * @param {number} [batchGroupId] - Link this batch to a specific batch group. This is done automatically with default batches.
-     * @returns {pc.Batch} The resulting batch object.
-     */
-    create(meshInstances, dynamic, batchGroupId) {
+    collectBatchedMeshData(meshInstances, dynamic) {
 
-        // #ifdef PROFILER
-        var time = now();
-        // #endif
+        let streams = null;
+        let batchNumVerts = 0;
+        let batchNumIndices = 0;
+        let material = null;
 
-        if (!this._init) {
-            var boneLimit = "#define BONE_LIMIT " + this.device.getBoneLimit() + "\n";
-            this.transformVS = boneLimit + "#define DYNAMICBATCH\n" + shaderChunks.transformVS;
-            this.skinTexVS = shaderChunks.skinBatchTexVS;
-            this.skinConstVS = shaderChunks.skinBatchConstVS;
-            this.vertexFormats = {};
-            this._init = true;
-        }
-
-        var i, j;
-        var streams = null, stream;
-        var semantic;
-        var material = null;
-        var mesh, elems, numVerts;
-        var batchNumVerts = 0;
-        var batchNumIndices = 0;
-        var batch = null;
-
-        for (i = 0; i < meshInstances.length; i++) {
+        for (let i = 0; i < meshInstances.length; i++) {
             if (meshInstances[i].visible) {
 
                 // vertex counts
-                mesh = meshInstances[i].mesh;
-                numVerts = mesh.vertexBuffer.numVertices;
+                const mesh = meshInstances[i].mesh;
+                const numVerts = mesh.vertexBuffer.numVertices;
                 batchNumVerts += numVerts;
 
-                // index counts (handles special case of TRI-FAN-type non-indexed primitive used by UI)
-                batchNumIndices += mesh.primitive[0].indexed ? mesh.primitive[0].count :
-                    (mesh.primitive[0].type == PRIMITIVE_TRIFAN && mesh.primitive[0].count === 4 ? 6 : 0);
+                // index count
+                if (mesh.primitive[0].indexed) {
+                    batchNumIndices += mesh.primitive[0].count;
+                } else {
+                    // special case of fan / strip non-indexed primitive used by UI
+                    const primitiveType = mesh.primitive[0].type;
+                    if (primitiveType === PRIMITIVE_TRIFAN || primitiveType === PRIMITIVE_TRISTRIP) {
+                        if (mesh.primitive[0].count === 4) {
+                            batchNumIndices += 6;
+                        }
+                    }
+                }
 
                 // if first mesh
                 if (!streams) {
@@ -678,9 +632,9 @@ class BatchManager {
 
                     // collect used vertex buffer semantic information from first mesh (they all match)
                     streams = {};
-                    elems = mesh.vertexBuffer.format.elements;
-                    for (j = 0; j < elems.length; j++) {
-                        semantic = elems[j].name;
+                    const elems = mesh.vertexBuffer.format.elements;
+                    for (let j = 0; j < elems.length; j++) {
+                        const semantic = elems[j].name;
                         streams[semantic] = {
                             numComponents: elems[j].numComponents,
                             dataType: elems[j].dataType,
@@ -702,20 +656,64 @@ class BatchManager {
             }
         }
 
+        return {
+            streams: streams,
+            batchNumVerts: batchNumVerts,
+            batchNumIndices: batchNumIndices,
+            material: material
+        };
+    }
+
+    /**
+     * Takes a mesh instance list that has been prepared by {@link prepare}, and
+     * returns a {@link Batch} object. This method assumes that all mesh instances provided can be
+     * rendered in a single draw call.
+     *
+     * @param {MeshInstance[]} meshInstances - Input list of mesh instances.
+     * @param {boolean} dynamic - Is it a static or dynamic batch? Will objects be transformed
+     * after batching?
+     * @param {number} [batchGroupId] - Link this batch to a specific batch group. This is done
+     * automatically with default batches.
+     * @returns {Batch} The resulting batch object.
+     */
+    create(meshInstances, dynamic, batchGroupId) {
+
+        // #if _PROFILER
+        const time = now();
+        // #endif
+
+        if (!this._init) {
+            this.vertexFormats = {};
+            this._init = true;
+        }
+
+        let stream = null;
+        let semantic;
+        let mesh, numVerts;
+        let batch = null;
+
+        // find out vertex streams and counts
+        const batchData = this.collectBatchedMeshData(meshInstances, dynamic);
+
         // if anything to batch
-        if (streams) {
+        if (batchData.streams) {
+
+            const streams = batchData.streams;
+            let material = batchData.material;
+            const batchNumVerts = batchData.batchNumVerts;
+            const batchNumIndices = batchData.batchNumIndices;
 
             batch = new Batch(meshInstances, dynamic, batchGroupId);
             this._batchList.push(batch);
 
-            var indexBase, numIndices, indexData;
-            var verticesOffset = 0;
-            var indexOffset = 0;
-            var transform, vec = new Vec3();
+            let indexBase, indexBaseVertex, numIndices, indexData;
+            let verticesOffset = 0;
+            let indexOffset = 0;
+            let transform;
 
             // allocate indices
-            var indexArrayType = batchNumVerts <= 0xffff ? Uint16Array : Uint32Array;
-            var indices = new indexArrayType(batchNumIndices);
+            const indexArrayType = batchNumVerts <= 0xffff ? Uint16Array : Uint32Array;
+            const indices = new indexArrayType(batchNumIndices);
 
             // allocate typed arrays to store final vertex stream data
             for (semantic in streams) {
@@ -726,9 +724,10 @@ class BatchManager {
             }
 
             // build vertex and index data for final mesh
-            for (i = 0; i < meshInstances.length; i++) {
-                if (!meshInstances[i].visible)
+            for (let i = 0; i < meshInstances.length; i++) {
+                if (!meshInstances[i].visible) {
                     continue;
+                }
 
                 mesh = meshInstances[i].mesh;
                 numVerts = mesh.vertexBuffer.numVertices;
@@ -743,21 +742,55 @@ class BatchManager {
                         stream = streams[semantic];
 
                         // get vertex stream to typed view subarray
-                        var subarray = new stream.typeArrayType(stream.buffer.buffer, stream.elementByteSize * stream.count);
-                        var totalComponents = mesh.getVertexStream(semantic, subarray) * stream.numComponents;
+                        const subarray = new stream.typeArrayType(stream.buffer.buffer, stream.elementByteSize * stream.count);
+                        const totalComponents = mesh.getVertexStream(semantic, subarray) * stream.numComponents;
                         stream.count += totalComponents;
 
                         // transform position, normal and tangent to world space
                         if (!dynamic && stream.numComponents >= 3) {
-                            if (semantic == SEMANTIC_POSITION || semantic == SEMANTIC_NORMAL || semantic == SEMANTIC_TANGENT) {
-                                transform.transformFunction = semantic == SEMANTIC_POSITION ? Mat4.prototype.transformPoint : Mat4.prototype.transformVector;
+                            if (semantic === SEMANTIC_POSITION) {
+                                const m = transform.data;
+                                const m0 = m[0];
+                                const m1 = m[1];
+                                const m2 = m[2];
+                                const m4 = m[4];
+                                const m5 = m[5];
+                                const m6 = m[6];
+                                const m8 = m[8];
+                                const m9 = m[9];
+                                const m10 = m[10];
+                                const m12 = m[12];
+                                const m13 = m[13];
+                                const m14 = m[14];
 
-                                for (j = 0; j < totalComponents; j += stream.numComponents) {
-                                    vec.set(subarray[j], subarray[j + 1], subarray[j + 2]);
-                                    transform.transformFunction(vec, vec);
-                                    subarray[j] = vec.x;
-                                    subarray[j + 1] = vec.y;
-                                    subarray[j + 2] = vec.z;
+                                let x, y, z;
+
+                                for (let j = 0; j < totalComponents; j += stream.numComponents) {
+                                    x = subarray[j];
+                                    y = subarray[j + 1];
+                                    z = subarray[j + 2];
+
+                                    // mat4.transformVector
+                                    subarray[j] = x * m0 + y * m4 + z * m8 + m12;
+                                    subarray[j + 1] = x * m1 + y * m5 + z * m9 + m13;
+                                    subarray[j + 2] = x * m2 + y * m6 + z * m10 + m14;
+                                }
+                            } else if (semantic === SEMANTIC_NORMAL || semantic === SEMANTIC_TANGENT) {
+                                // handle non-uniform scale by using transposed inverse matrix to transform vectors
+                                mat3.invertMat4(transform).transpose();
+
+                                const [m0, m1, m2, m3, m4, m5, m6, m7, m8] = mat3.data;
+                                let x, y, z;
+
+                                for (let j = 0; j < totalComponents; j += stream.numComponents) {
+                                    x = subarray[j];
+                                    y = subarray[j + 1];
+                                    z = subarray[j + 2];
+
+                                    // mat3.transformVector
+                                    subarray[j] = x * m0 + y * m3 + z * m6;
+                                    subarray[j + 1] = x * m1 + y * m4 + z * m7;
+                                    subarray[j + 2] = x * m2 + y * m5 + z * m8;
                                 }
                             }
                         }
@@ -767,30 +800,40 @@ class BatchManager {
                 // bone index is mesh index
                 if (dynamic) {
                     stream = streams[SEMANTIC_BLENDINDICES];
-                    for (j = 0; j < numVerts; j++)
+                    for (let j = 0; j < numVerts; j++) {
                         stream.buffer[stream.count++] = i;
+                    }
                 }
 
                 // index buffer
                 if (mesh.primitive[0].indexed) {
                     indexBase = mesh.primitive[0].base;
+                    indexBaseVertex = mesh.primitive[0].baseVertex || 0;
                     numIndices = mesh.primitive[0].count;
 
                     // source index buffer data mapped to its format
-                    var srcFormat = mesh.indexBuffer[0].getFormat();
+                    const srcFormat = mesh.indexBuffer[0].getFormat();
                     indexData = new typedArrayIndexFormats[srcFormat](mesh.indexBuffer[0].storage);
-                } else if (mesh.primitive[0].type == PRIMITIVE_TRIFAN && mesh.primitive[0].count === 4) {
-                    // Special case for UI image elements
-                    indexBase = 0;
-                    numIndices = 6;
-                    indexData = [0, 1, 3, 2, 3, 1];
-                } else {
-                    numIndices = 0;
-                    continue;
+
+                } else { // non-indexed
+
+                    indexBaseVertex = 0;
+
+                    const primitiveType = mesh.primitive[0].type;
+                    if (primitiveType === PRIMITIVE_TRIFAN || primitiveType === PRIMITIVE_TRISTRIP) {
+                        if (mesh.primitive[0].count === 4) {
+                            indexBase = 0;
+                            numIndices = 6;
+                            indexData = primitiveType === PRIMITIVE_TRIFAN ? _triFanIndices : _triStripIndices;
+                        } else {
+                            numIndices = 0;
+                            continue;
+                        }
+                    }
                 }
 
-                for (j = 0; j < numIndices; j++) {
-                    indices[j + indexOffset] = indexData[indexBase + j] + verticesOffset;
+                for (let j = 0; j < numIndices; j++) {
+                    indices[j + indexOffset] = indexData[indexBase + j] + indexBaseVertex + verticesOffset;
                 }
 
                 indexOffset += numIndices;
@@ -804,39 +847,37 @@ class BatchManager {
                 mesh.setVertexStream(semantic, stream.buffer, stream.numComponents, undefined, stream.dataType, stream.normalize);
             }
 
-            if (indices.length > 0)
+            if (indices.length > 0) {
                 mesh.setIndices(indices);
+            }
 
             mesh.update(PRIMITIVE_TRIANGLES, false);
 
             // Patch the material
             if (dynamic) {
                 material = material.clone();
-                material.chunks.transformVS = this.transformVS;
-                material.chunks.skinTexVS = this.skinTexVS;
-                material.chunks.skinConstVS = this.skinConstVS;
                 material.update();
             }
 
             // Create meshInstance
-            var meshInstance = new MeshInstance(this.rootNode, mesh, material);
+            const meshInstance = new MeshInstance(mesh, material, this.rootNode);
             meshInstance.castShadow = batch.origMeshInstances[0].castShadow;
             meshInstance.parameters = batch.origMeshInstances[0].parameters;
-            meshInstance.isStatic = batch.origMeshInstances[0].isStatic;
             meshInstance.layer = batch.origMeshInstances[0].layer;
-            meshInstance._staticLightList = batch.origMeshInstances[0]._staticLightList;
             meshInstance._shaderDefs = batch.origMeshInstances[0]._shaderDefs;
+            meshInstance.batching = true;
 
             // meshInstance culling - don't cull UI elements, as they use custom culling Component.isVisibleForCamera
             meshInstance.cull = batch.origMeshInstances[0].cull;
-            var batchGroup = this._batchGroups[batchGroupId];
-            if (batchGroup && batchGroup._ui)
+            const batchGroup = this._batchGroups[batchGroupId];
+            if (batchGroup && batchGroup._ui) {
                 meshInstance.cull = false;
+            }
 
             if (dynamic) {
                 // Create skinInstance
-                var nodes = [];
-                for (i = 0; i < batch.origMeshInstances.length; i++) {
+                const nodes = [];
+                for (let i = 0; i < batch.origMeshInstances.length; i++) {
                     nodes.push(batch.origMeshInstances[i].node);
                 }
                 meshInstance.skinInstance = new SkinBatchInstance(this.device, nodes, this.rootNode);
@@ -848,18 +889,14 @@ class BatchManager {
             meshInstance.drawOrder = batch.origMeshInstances[0].drawOrder;
             meshInstance.stencilFront = batch.origMeshInstances[0].stencilFront;
             meshInstance.stencilBack = batch.origMeshInstances[0].stencilBack;
-            meshInstance.flipFaces = getScaleSign(batch.origMeshInstances[0]) < 0;
+            meshInstance.flipFacesFactor = getScaleSign(batch.origMeshInstances[0]);
+            meshInstance.castShadow = batch.origMeshInstances[0].castShadow;
+
             batch.meshInstance = meshInstance;
-            this.update(batch);
-
-            var newModel = new Model();
-            newModel.meshInstances = [batch.meshInstance];
-            newModel.castShadows = batch.origMeshInstances[0].castShadows;
-
-            batch.model = newModel;
+            batch.updateBoundingBox();
         }
 
-        // #ifdef PROFILER
+        // #if _PROFILER
         this._stats.createTime += now() - time;
         // #endif
 
@@ -867,27 +904,9 @@ class BatchManager {
     }
 
     /**
-     * @private
-     * @function
-     * @name pc.BatchManager#update
-     * @description Updates bounding box for a batch. Called automatically.
-     * @param {pc.Batch} batch - A batch object.
-     */
-    update(batch) {
-        batch._aabb.copy(batch.origMeshInstances[0].aabb);
-        for (var i = 1; i < batch.origMeshInstances.length; i++) {
-            batch._aabb.add(batch.origMeshInstances[i].aabb); // this is the slowest part
-        }
-        batch.meshInstance.aabb = batch._aabb;
-        batch._aabb._radiusVer = -1;
-        batch.meshInstance._aabbVer = 0;
-    }
-
-    /**
-     * @private
-     * @function
-     * @name pc.BatchManager#updateAll
-     * @description Updates bounding boxes for all dynamic batches. Called automatically.
+     * Updates bounding boxes for all dynamic batches. Called automatically.
+     *
+     * @ignore
      */
     updateAll() {
         // TODO: only call when needed. Applies to skinning matrices as well
@@ -896,78 +915,60 @@ class BatchManager {
             this.generate(this._dirtyGroups);
         }
 
-        // #ifdef PROFILER
-        var time = now();
+        // #if _PROFILER
+        const time = now();
         // #endif
 
-        for (var i = 0; i < this._batchList.length; i++) {
+        for (let i = 0; i < this._batchList.length; i++) {
             if (!this._batchList[i].dynamic) continue;
-            this.update(this._batchList[i]);
+            this._batchList[i].updateBoundingBox();
         }
 
-        // #ifdef PROFILER
+        // #if _PROFILER
         this._stats.updateLastFrameTime = now() - time;
         // #endif
     }
 
     /**
-     * @function
-     * @name pc.BatchManager#clone
-     * @description Clones a batch. This method doesn't rebuild batch geometry, but only creates a new model and batch objects, linked to different source mesh instances.
-     * @param {pc.Batch} batch - A batch object.
-     * @param {pc.MeshInstance[]} clonedMeshInstances - New mesh instances.
-     * @returns {pc.Batch} New batch object.
+     * Clones a batch. This method doesn't rebuild batch geometry, but only creates a new model and
+     * batch objects, linked to different source mesh instances.
+     *
+     * @param {Batch} batch - A batch object.
+     * @param {MeshInstance[]} clonedMeshInstances - New mesh instances.
+     * @returns {Batch} New batch object.
      */
     clone(batch, clonedMeshInstances) {
-        var batch2 = new Batch(clonedMeshInstances, batch.dynamic, batch.batchGroupId);
+        const batch2 = new Batch(clonedMeshInstances, batch.dynamic, batch.batchGroupId);
         this._batchList.push(batch2);
 
-        var nodes = [];
-        for (var i = 0; i < clonedMeshInstances.length; i++) {
+        const nodes = [];
+        for (let i = 0; i < clonedMeshInstances.length; i++) {
             nodes.push(clonedMeshInstances[i].node);
         }
 
-        batch2.meshInstance = new MeshInstance(batch.meshInstance.node, batch.meshInstance.mesh, batch.meshInstance.material);
+        batch2.meshInstance = new MeshInstance(batch.meshInstance.mesh, batch.meshInstance.material, batch.meshInstance.node);
         batch2.meshInstance._updateAabb = false;
         batch2.meshInstance.parameters = clonedMeshInstances[0].parameters;
-        batch2.meshInstance.isStatic = clonedMeshInstances[0].isStatic;
         batch2.meshInstance.cull = clonedMeshInstances[0].cull;
         batch2.meshInstance.layer = clonedMeshInstances[0].layer;
-        batch2.meshInstance._staticLightList = clonedMeshInstances[0]._staticLightList;
 
         if (batch.dynamic) {
             batch2.meshInstance.skinInstance = new SkinBatchInstance(this.device, nodes, this.rootNode);
         }
 
         batch2.meshInstance.castShadow = batch.meshInstance.castShadow;
-        batch2.meshInstance._shader = batch.meshInstance._shader;
-
-        var newModel = new Model();
-
-        newModel.meshInstances = [batch2.meshInstance];
-        newModel.castShadows = batch.origMeshInstances[0].castShadows;
-        batch2.model = newModel;
 
         return batch2;
     }
 
     /**
+     * Removes the batch model from all layers and destroys it.
+     *
+     * @param {Batch} batch - A batch object.
      * @private
-     * @function
-     * @name pc.BatchManager#destroy
-     * @description Removes the batch model from all layers and destroys it.
-     * @param {pc.Batch} batch - A batch object.
      */
-    destroy(batch) {
-        if (!batch.model)
-            return;
-        var layers = this._batchGroups[batch.batchGroupId].layers;
-        for (var i = 0; i < layers.length; i++) {
-            var layer = this.scene.layers.getLayerById(layers[i]);
-            if (layer)
-                layer.removeMeshInstances(batch.model.meshInstances);
-        }
-        batch.model.destroy();
+    destroyBatch(batch) {
+        batch.destroy(this.scene, this._batchGroups[batch.batchGroupId].layers);
     }
 }
 

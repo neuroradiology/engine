@@ -1,58 +1,110 @@
-import { Mat4 } from '../../../math/mat4.js';
-import { Vec2 } from '../../../math/vec2.js';
-
+import { Debug } from '../../../core/debug.js';
+import { math } from '../../../core/math/math.js';
+import { Mat4 } from '../../../core/math/mat4.js';
+import { Vec2 } from '../../../core/math/vec2.js';
 import { Entity } from '../../entity.js';
-
 import { SCALEMODE_BLEND, SCALEMODE_NONE } from './constants.js';
 import { Component } from '../component.js';
 
-var _transform = new Mat4();
+/**
+ * @import { ScreenComponentSystem } from './system.js'
+ */
+
+const _transform = new Mat4();
 
 /**
- * @component
- * @class
- * @name pc.ScreenComponent
- * @augments pc.Component
- * @classdesc A ScreenComponent enables the Entity to render child {@link pc.ElementComponent}s using anchors and positions in the ScreenComponent's space.
- * @description Create a new ScreenComponent.
- * @param {pc.ScreenComponentSystem} system - The ComponentSystem that created this Component.
- * @param {pc.Entity} entity - The Entity that this Component is attached to.
- * @property {boolean} screenSpace If true then the ScreenComponent will render its child {@link pc.ElementComponent}s in screen space instead of world space. Enable this to create 2D user interfaces.
- * @property {boolean} cull If true then elements inside this screen will be not be rendered when outside of the screen (only valid when screenSpace is true).
- * @property {string} scaleMode Can either be {@link pc.SCALEMODE_NONE} or {@link pc.SCALEMODE_BLEND}. See the description of referenceResolution for more information.
- * @property {number} scaleBlend A value between 0 and 1 that is used when scaleMode is equal to {@link pc.SCALEMODE_BLEND}. Scales the ScreenComponent with width as a reference (when value is 0), the height as a reference (when value is 1) or anything in between.
- * @property {pc.Vec2} resolution The width and height of the ScreenComponent. When screenSpace is true the resolution will always be equal to {@link pc.GraphicsDevice#width} x {@link pc.GraphicsDevice#height}.
- * @property {pc.Vec2} referenceResolution The resolution that the ScreenComponent is designed for. This is only taken into account when screenSpace is true and scaleMode is {@link pc.SCALEMODE_BLEND}. If the actual resolution is different then the ScreenComponent will be scaled according to the scaleBlend value.
+ * A ScreenComponent defines a rectangular area where user interfaces can be constructed. Screens
+ * can either be 2D (screen space) or 3D (world space) - see {@link screenSpace}. It is possible to
+ * create an {@link Entity} hierarchy underneath an Entity with a ScreenComponent to create complex
+ * user interfaces using the following components:
+ *
+ * - {@link ButtonComponent}
+ * - {@link ElementComponent}
+ * - {@link LayoutChildComponent}
+ * - {@link LayoutGroupComponent}
+ * - {@link ScrollbarComponent}
+ * - {@link ScrollViewComponent}
+ *
+ * You should never need to use the ScreenComponent constructor directly. To add a ScreenComponent
+ * to an {@link Entity}, use {@link Entity#addComponent}:
+ *
+ * ```javascript
+ * const entity = new pc.Entity();
+ * entity.addComponent('screen', {
+ *     referenceResolution: new pc.Vec2(1280, 720),
+ *     screenSpace: false
+ * });
+ * ```
+ *
+ * Once the ScreenComponent is added to the entity, you can access it via the {@link Entity#screen}
+ * property:
+ *
+ * ```javascript
+ * entity.screen.scaleBlend = 0.6; // Set the screen's scale blend to 0.6
+ *
+ * console.log(entity.screen.scaleBlend); // Get the screen's scale blend and print it
+ * ```
+ *
+ * Relevant Engine API examples:
+ *
+ * - [Screen Space Screen](https://playcanvas.github.io/#/user-interface/text)
+ * - [World Space Screen](https://playcanvas.github.io/#/user-interface/world-ui)
+ *
+ * @hideconstructor
+ * @category User Interface
  */
 class ScreenComponent extends Component {
+    /** @private */
+    _resolution = new Vec2(640, 320);
+
+    /** @private */
+    _referenceResolution = new Vec2(640, 320);
+
+    /** @private */
+    _scaleMode = SCALEMODE_NONE;
+
+    /** @ignore */
+    scale = 1;
+
+    /** @private */
+    _scaleBlend = 0.5;
+
+    /** @private */
+    _priority = 0;
+
+    /** @private */
+    _screenSpace = false;
+
+    /**
+     * If true, then elements inside this screen will not be rendered when outside of the screen
+     * (only valid when {@link screenSpace} is true).
+     *
+     * @type {boolean}
+     */
+    cull = false;
+
+    /** @private */
+    _screenMatrix = new Mat4();
+
+    /** @private */
+    _elements = new Set();
+
+    /**
+     * Create a new ScreenComponent.
+     *
+     * @param {ScreenComponentSystem} system - The ComponentSystem that created this Component.
+     * @param {Entity} entity - The Entity that this Component is attached to.
+     */
     constructor(system, entity) {
         super(system, entity);
 
-        this._resolution = new Vec2(640, 320);
-        this._referenceResolution = new Vec2(640, 320);
-        this._scaleMode = SCALEMODE_NONE;
-        this.scale = 1;
-        this._scaleBlend = 0.5;
-
-        // priority determines the order in which screens components are rendered
-        // priority is set into the top 8 bits of the drawOrder property in an element
-        this._priority = 0;
-
-        this._screenSpace = false;
-        this.cull = this._screenSpace;
-        this._screenMatrix = new Mat4();
-
-        this._elements = new Set();
-
-        system.app.graphicsDevice.on("resizecanvas", this._onResize, this);
+        system.app.graphicsDevice.on('resizecanvas', this._onResize, this);
     }
 
     /**
-     * @function
-     * @name pc.ScreenComponent#syncDrawOrder
-     * @description Set the drawOrder of each child {@link pc.ElementComponent}
-     * so that ElementComponents which are last in the hierarchy are rendered on top.
-     * Draw Order sync is queued and will be updated by the next update loop.
+     * Set the drawOrder of each child {@link ElementComponent} so that ElementComponents which are
+     * last in the hierarchy are rendered on top. Draw Order sync is queued and will be updated by
+     * the next update loop.
      */
     syncDrawOrder() {
         this.system.queueDrawOrderSync(this.entity.getGuid(), this._processDrawOrderSync, this);
@@ -64,21 +116,21 @@ class ScreenComponent extends Component {
         }
 
         if (e.element) {
-            var prevDrawOrder = e.element.drawOrder;
+            const prevDrawOrder = e.element.drawOrder;
             e.element.drawOrder = i++;
 
-            if (e.element._batchGroupId >= 0 && prevDrawOrder != e.element.drawOrder) {
-                this.system.app.batcher.markGroupDirty(e.element._batchGroupId);
+            if (e.element._batchGroupId >= 0 && prevDrawOrder !== e.element.drawOrder) {
+                this.system.app.batcher?.markGroupDirty(e.element._batchGroupId);
             }
         }
 
-        // child particle system inside 2D screen sub-hierarachy gets sorted along other 2D elements
+        // child particle system inside 2D screen sub-hierarchy gets sorted along other 2D elements
         if (e.particlesystem) {
             e.particlesystem.drawOrder = i++;
         }
 
-        var children = e.children;
-        for (var j = 0; j < children.length; j++) {
+        const children = e.children;
+        for (let j = 0; j < children.length; j++) {
             i = this._recurseDrawOrderSync(children[j], i);
         }
 
@@ -86,7 +138,7 @@ class ScreenComponent extends Component {
     }
 
     _processDrawOrderSync() {
-        var i = 1;
+        const i = 1;
 
         this._recurseDrawOrderSync(this.entity, i);
 
@@ -95,20 +147,15 @@ class ScreenComponent extends Component {
     }
 
     _calcProjectionMatrix() {
-        var left;
-        var right;
-        var bottom;
-        var top;
-        var near = 1;
-        var far = -1;
+        const w = this._resolution.x / this.scale;
+        const h = this._resolution.y / this.scale;
 
-        var w = this._resolution.x / this.scale;
-        var h = this._resolution.y / this.scale;
-
-        left = 0;
-        right = w;
-        bottom = -h;
-        top = 0;
+        const left = 0;
+        const right = w;
+        const bottom = -h;
+        const top = 0;
+        const near = 1;
+        const far = -1;
 
         this._screenMatrix.setOrtho(left, right, bottom, top, near, far);
 
@@ -126,8 +173,8 @@ class ScreenComponent extends Component {
         // Using log of scale values
         // This produces a nicer outcome where if you have a xscale = 2 and yscale = 0.5
         // the combined scale is 1 for an even blend
-        var lx = Math.log2(resolution.x / referenceResolution.x);
-        var ly = Math.log2(resolution.y / referenceResolution.y);
+        const lx = Math.log2((resolution.x || 1) / referenceResolution.x);
+        const ly = Math.log2((resolution.y || 1) / referenceResolution.y);
         return Math.pow(2, (lx * (1 - this._scaleBlend) + ly * this._scaleBlend));
     }
 
@@ -147,7 +194,7 @@ class ScreenComponent extends Component {
     }
 
     onRemove() {
-        this.system.app.graphicsDevice.off("resizecanvas", this._onResize, this);
+        this.system.app.graphicsDevice.off('resizecanvas', this._onResize, this);
         this.fire('remove');
 
         this._elements.forEach(element => element._onScreenRemove());
@@ -158,11 +205,18 @@ class ScreenComponent extends Component {
 
     }
 
+    /**
+     * Sets the width and height of the ScreenComponent. When {@link screenSpace} is true, the
+     * resolution will always be equal to {@link GraphicsDevice#width} by
+     * {@link GraphicsDevice#height}.
+     *
+     * @type {Vec2}
+     */
     set resolution(value) {
         if (!this._screenSpace) {
             this._resolution.set(value.x, value.y);
         } else {
-            // ignore input when using screenspace.
+            // ignore input when using screen space.
             this._resolution.set(this.system.app.graphicsDevice.width, this.system.app.graphicsDevice.height);
         }
 
@@ -170,37 +224,62 @@ class ScreenComponent extends Component {
 
         this._calcProjectionMatrix();
 
-        if (!this.entity._dirtyLocal)
+        if (!this.entity._dirtyLocal) {
             this.entity._dirtifyLocal();
+        }
 
-        this.fire("set:resolution", this._resolution);
+        this.fire('set:resolution', this._resolution);
         this._elements.forEach(element => element._onScreenResize(this._resolution));
     }
 
+    /**
+     * Gets the width and height of the ScreenComponent.
+     *
+     * @type {Vec2}
+     */
     get resolution() {
         return this._resolution;
     }
 
+    /**
+     * Sets the resolution that the ScreenComponent is designed for. This is only taken into
+     * account when {@link screenSpace} is true and {@link scaleMode} is {@link SCALEMODE_BLEND}.
+     * If the actual resolution is different, then the ScreenComponent will be scaled according to
+     * the {@link scaleBlend} value.
+     *
+     * @type {Vec2}
+     */
     set referenceResolution(value) {
         this._referenceResolution.set(value.x, value.y);
         this._updateScale();
         this._calcProjectionMatrix();
 
-        if (!this.entity._dirtyLocal)
+        if (!this.entity._dirtyLocal) {
             this.entity._dirtifyLocal();
+        }
 
-        this.fire("set:referenceresolution", this._resolution);
+        this.fire('set:referenceresolution', this._resolution);
         this._elements.forEach(element => element._onScreenResize(this._resolution));
     }
 
+    /**
+     * Gets the resolution that the ScreenComponent is designed for.
+     *
+     * @type {Vec2}
+     */
     get referenceResolution() {
         if (this._scaleMode === SCALEMODE_NONE) {
             return this._resolution;
         }
         return this._referenceResolution;
-
     }
 
+    /**
+     * Sets whether the ScreenComponent will render its child {@link ElementComponent}s in screen
+     * space instead of world space. Enable this to create 2D user interfaces. Defaults to false.
+     *
+     * @type {boolean}
+     */
     set screenSpace(value) {
         this._screenSpace = value;
         if (this._screenSpace) {
@@ -208,18 +287,32 @@ class ScreenComponent extends Component {
         }
         this.resolution = this._resolution; // force update either way
 
-        if (!this.entity._dirtyLocal)
+        if (!this.entity._dirtyLocal) {
             this.entity._dirtifyLocal();
+        }
 
         this.fire('set:screenspace', this._screenSpace);
 
         this._elements.forEach(element => element._onScreenSpaceChange());
     }
 
+    /**
+     * Gets whether the ScreenComponent will render its child {@link ElementComponent}s in screen
+     * space instead of world space.
+     *
+     * @type {boolean}
+     */
     get screenSpace() {
         return this._screenSpace;
     }
 
+    /**
+     * Sets the scale mode. Can either be {@link SCALEMODE_NONE} or {@link SCALEMODE_BLEND}. See
+     * the description of {@link referenceResolution} for more information. Defaults to
+     * {@link SCALEMODE_NONE}.
+     *
+     * @type {string}
+     */
     set scaleMode(value) {
         if (value !== SCALEMODE_NONE && value !== SCALEMODE_BLEND) {
             value = SCALEMODE_NONE;
@@ -232,43 +325,74 @@ class ScreenComponent extends Component {
 
         this._scaleMode = value;
         this.resolution = this._resolution; // force update
-        this.fire("set:scalemode", this._scaleMode);
+        this.fire('set:scalemode', this._scaleMode);
     }
 
+    /**
+     * Gets the scale mode.
+     *
+     * @type {string}
+     */
     get scaleMode() {
         return this._scaleMode;
     }
 
+    /**
+     * Sets the scale blend. This is a value between 0 and 1 that is used when {@link scaleMode} is
+     * equal to {@link SCALEMODE_BLEND}. Scales the ScreenComponent with width as a reference (when
+     * value is 0), the height as a reference (when value is 1) or anything in between. Defaults to
+     * 0.5.
+     *
+     * @type {number}
+     */
     set scaleBlend(value) {
         this._scaleBlend = value;
         this._updateScale();
         this._calcProjectionMatrix();
 
-        if (!this.entity._dirtyLocal)
+        if (!this.entity._dirtyLocal) {
             this.entity._dirtifyLocal();
+        }
 
-        this.fire("set:scaleblend", this._scaleBlend);
+        this.fire('set:scaleblend', this._scaleBlend);
 
         this._elements.forEach(element => element._onScreenResize(this._resolution));
     }
 
+    /**
+     * Gets the scale blend.
+     *
+     * @type {number}
+     */
     get scaleBlend() {
         return this._scaleBlend;
     }
 
-    get priority() {
-        return this._priority;
-    }
-
+    /**
+     * Sets the screen's render priority. Priority determines the order in which ScreenComponents
+     * in the same layer are rendered. Number must be an integer between 0 and 127. Priority is set
+     * into the top 8 bits of the {@link ElementComponent#drawOrder} property. Defaults to 0.
+     *
+     * @type {number}
+     */
     set priority(value) {
-        if (value > 0xFF) {
-            // #ifdef DEBUG
-            console.warn('Clamping screen priority from ' + value + ' to 255');
-            // #endif
-            value = 0xFF;
+        Debug.assert(value >= 0 && value <= 0x7F, `Screen priority must be between 0 and 127, got ${value}`);
+        value = math.clamp(value, 0, 0x7F);
+        if (this._priority === value) {
+            return;
         }
 
         this._priority = value;
+        this.syncDrawOrder();
+    }
+
+    /**
+     * Gets the screen's render priority.
+     *
+     * @type {number}
+     */
+    get priority() {
+        return this._priority;
     }
 }
 

@@ -1,24 +1,28 @@
 import { IndexedList } from '../../../core/indexed-list.js';
-
-import { Vec2 } from '../../../math/vec2.js';
-
+import { Vec2 } from '../../../core/math/vec2.js';
 import { Component } from '../component.js';
 import { ComponentSystem } from '../system.js';
-
 import { ScreenComponent } from './component.js';
 import { ScreenComponentData } from './data.js';
+
+/**
+ * @import { AppBase } from '../../app-base.js'
+ */
 
 const _schema = ['enabled'];
 
 /**
- * @class
- * @name pc.ScreenComponentSystem
- * @augments pc.ComponentSystem
- * @classdesc Manages creation of {@link pc.ScreenComponent}s.
- * @description Create a new ScreenComponentSystem.
- * @param {pc.Application} app - The application.
+ * Manages creation of {@link ScreenComponent}s.
+ *
+ * @category User Interface
  */
 class ScreenComponentSystem extends ComponentSystem {
+    /**
+     * Create a new ScreenComponentSystem instance.
+     *
+     * @param {AppBase} app - The application.
+     * @ignore
+     */
     constructor(app) {
         super(app);
 
@@ -34,9 +38,9 @@ class ScreenComponentSystem extends ComponentSystem {
         // queue of callbacks
         this._drawOrderSyncQueue = new IndexedList();
 
-        this.app.graphicsDevice.on("resizecanvas", this._onResize, this);
+        this.app.graphicsDevice.on('resizecanvas', this._onResize, this);
 
-        ComponentSystem.bind('update', this._onUpdate, this);
+        this.app.systems.on('update', this._onUpdate, this);
 
         this.on('beforeremove', this.onRemoveComponent, this);
     }
@@ -48,7 +52,7 @@ class ScreenComponentSystem extends ComponentSystem {
         if (data.scaleMode !== undefined) component.scaleMode = data.scaleMode;
         if (data.scaleBlend !== undefined) component.scaleBlend = data.scaleBlend;
         if (data.resolution !== undefined) {
-            if (data.resolution instanceof Vec2){
+            if (data.resolution instanceof Vec2) {
                 component._resolution.copy(data.resolution);
             } else {
                 component._resolution.set(data.resolution[0], data.resolution[1]);
@@ -56,7 +60,7 @@ class ScreenComponentSystem extends ComponentSystem {
             component.resolution = component._resolution;
         }
         if (data.referenceResolution !== undefined) {
-            if (data.referenceResolution instanceof Vec2){
+            if (data.referenceResolution instanceof Vec2) {
                 component._referenceResolution.copy(data.referenceResolution);
             } else {
                 component._referenceResolution.set(data.referenceResolution[0], data.referenceResolution[1]);
@@ -64,20 +68,40 @@ class ScreenComponentSystem extends ComponentSystem {
             component.referenceResolution = component._referenceResolution;
         }
 
+        // Update any existing element components in the hierarchy that don't have a screen yet.
+        // This handles cases where element components were added before the screen component.
+        this._updateDescendantElements(component.entity, component.entity);
+
         // queue up a draw order sync
         component.syncDrawOrder();
-        super.initializeComponentData(component, data, properties);
+        super.initializeComponentData(component, data, _schema);
+    }
+
+    _updateDescendantElements(entity, screenEntity) {
+        const children = entity.children;
+        for (let i = 0; i < children.length; i++) {
+            const child = children[i];
+            if (child.element && !child.element.screen) {
+                child.element._updateScreen(screenEntity);
+            }
+            // Continue traversing unless this child has its own screen component
+            if (!child.screen) {
+                this._updateDescendantElements(child, screenEntity);
+            }
+        }
     }
 
     destroy() {
-        this.off();
-        this.app.graphicsDevice.off("resizecanvas", this._onResize, this);
+        super.destroy();
+
+        this.app.graphicsDevice.off('resizecanvas', this._onResize, this);
+        this.app.systems.off('update', this._onUpdate, this);
     }
 
     _onUpdate(dt) {
-        var components = this.store;
+        const components = this.store;
 
-        for (var id in components) {
+        for (const id in components) {
             if (components[id].entity.screen.update) components[id].entity.screen.update(dt);
         }
     }
@@ -88,12 +112,14 @@ class ScreenComponentSystem extends ComponentSystem {
     }
 
     cloneComponent(entity, clone) {
-        var screen = entity.screen;
+        const screen = entity.screen;
 
         return this.addComponent(clone, {
             enabled: screen.enabled,
             screenSpace: screen.screenSpace,
             scaleMode: screen.scaleMode,
+            scaleBlend: screen.scaleBlend,
+            priority: screen.priority,
             resolution: screen.resolution.clone(),
             referenceResolution: screen.referenceResolution.clone()
         });
@@ -104,10 +130,10 @@ class ScreenComponentSystem extends ComponentSystem {
     }
 
     processDrawOrderSyncQueue() {
-        var list = this._drawOrderSyncQueue.list();
+        const list = this._drawOrderSyncQueue.list();
 
-        for (var i = 0; i < list.length; i++) {
-            var item = list[i];
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i];
             item.callback.call(item.scope);
         }
         this._drawOrderSyncQueue.clear();

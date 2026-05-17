@@ -1,14 +1,14 @@
 /**
- * @constant
- * @type {string}
- * @name pc.SCALEMODE_NONE
- * @description Always use the application's resolution as the resolution for the {@link pc.ScreenComponent}.
+ * Always use the application's resolution as the resolution for the {@link ScreenComponent}.
+ *
+ * @category User Interface
  */
-export const SCALEMODE_NONE = "none";
+export const SCALEMODE_NONE = 'none';
+
 /**
- * @constant
- * @type {string}
- * @name pc.SCALEMODE_BLEND
- * @description Scale the {@link pc.ScreenComponent} when the application's resolution is different than the ScreenComponent's referenceResolution.
+ * Scale the {@link ScreenComponent} when the application's resolution is different than the
+ * ScreenComponent's referenceResolution.
+ *
+ * @category User Interface
  */
-export const SCALEMODE_BLEND = "blend";
+export const SCALEMODE_BLEND = 'blend';

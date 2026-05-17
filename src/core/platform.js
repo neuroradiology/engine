@@ -1,147 +1,185 @@
+// detect whether passive events are supported by the browser
+const detectPassiveEvents = () => {
+    let result = false;
+
+    try {
+        const opts = Object.defineProperty({}, 'passive', {
+            get: function () {
+                result = true;
+                return false;
+            }
+        });
+        window.addEventListener('testpassive', null, opts);
+        window.removeEventListener('testpassive', null, opts);
+    } catch (e) {}
+
+    return result;
+};
+
+const ua = (typeof navigator !== 'undefined') ? navigator.userAgent : '';
+const environment = typeof window !== 'undefined' ? 'browser' :
+    typeof global !== 'undefined' ? 'node' : 'worker';
+
+// detect platform
+const platformName =
+    (/android/i.test(ua) ? 'android' :
+        (/ip(?:[ao]d|hone)/i.test(ua) ? 'ios' :
+            (/windows/i.test(ua) ? 'windows' :
+                (/mac os/i.test(ua) ? 'osx' :
+                    (/linux/i.test(ua) ? 'linux' :
+                        (/cros/i.test(ua) ? 'cros' : null))))));
+
+// detect browser
+const browserName =
+    (environment !== 'browser') ? null :
+        (/Chrome\/|Chromium\/|Edg.*\//.test(ua) ? 'chrome' :  // chrome, chromium, edge
+            (/Safari\//.test(ua) ? 'safari' :                   // safari, ios chrome/firefox
+                (/Firefox\//.test(ua) ? 'firefox' :
+                    'other')));
+
+const xbox = /xbox/i.test(ua);
+// visionOS Safari reports a macOS-style UA (no "visionOS" string) but uniquely has
+// maxTouchPoints > 0 on a "Macintosh" UA without any iPhone/iPad/iPod token.
+const visionos = /Macintosh/i.test(ua) &&
+    typeof navigator !== 'undefined' &&
+    navigator.maxTouchPoints > 0 &&
+    !/iPhone|iPad|iPod/i.test(ua);
+const touch = (environment === 'browser') && ('ontouchstart' in window || ('maxTouchPoints' in navigator && navigator.maxTouchPoints > 0));
+const gamepads = (environment === 'browser') && (!!navigator.getGamepads || !!navigator.webkitGetGamepads);
+const workers = (typeof Worker !== 'undefined');
+const passiveEvents = detectPassiveEvents();
+
 /**
+ * Global namespace that stores flags regarding platform environment and features support.
+ *
  * @namespace
- * @name pc.platform
- * @description Global namespace that stores flags regarding platform environment and features support.
  * @example
  * if (pc.platform.touch) {
  *     // touch is supported
  * }
  */
-var platform = {
+const platform = {
     /**
-     * @static
-     * @readonly
-     * @type {boolean}
-     * @name pc.platform.desktop
-     * @description Is it a desktop or laptop device.
+     * String identifying the current platform. Can be one of: android, ios, windows, osx, linux,
+     * cros or null.
+     *
+     * @type {'android' | 'ios' | 'windows' | 'osx' | 'linux' | 'cros' | null}
+     * @ignore
      */
-    desktop: false,
+    name: platformName,
 
     /**
-     * @static
-     * @readonly
-     * @type {boolean}
-     * @name pc.platform.mobile
-     * @description Is it a mobile or tablet device.
+     * String identifying the current runtime environment. Either 'browser', 'node' or 'worker'.
+     *
+     * @type {'browser' | 'node' | 'worker'}
      */
-    mobile: false,
+    environment: environment,
 
     /**
-     * @static
-     * @readonly
-     * @type {boolean}
-     * @name pc.platform.ios
-     * @description If it is iOS.
+     * The global object. This will be the window object when running in a browser and the global
+     * object when running in nodejs and self when running in a worker.
+     *
+     * @type {object}
      */
-    ios: false,
+    global: (typeof globalThis !== 'undefined' && globalThis) ??
+        (environment === 'browser' && window) ??
+        (environment === 'node' && global) ??
+        (environment === 'worker' && self),
 
     /**
-     * @static
-     * @readonly
+     * Convenience boolean indicating whether we're running in the browser.
+     *
      * @type {boolean}
-     * @name pc.platform.android
-     * @description If it is Android.
      */
-    android: false,
+    browser: environment === 'browser',
 
     /**
-     * @static
-     * @readonly
+     * True if running in a Web Worker.
+     *
      * @type {boolean}
-     * @name pc.platform.windows
-     * @description If it is Windows.
+     * @ignore
      */
-    windows: false,
+    worker: environment === 'worker',
 
     /**
-     * @static
-     * @readonly
+     * True if running on a desktop or laptop device.
+     *
      * @type {boolean}
-     * @name pc.platform.xbox
-     * @description If it is Xbox.
      */
-    xbox: false,
+    desktop: ['windows', 'osx', 'linux', 'cros'].includes(platformName),
 
     /**
-     * @static
-     * @readonly
+     * True if running on a mobile or tablet device.
+     *
      * @type {boolean}
-     * @name pc.platform.gamepads
-     * @description If platform supports gamepads.
      */
-    gamepads: false,
+    mobile: ['android', 'ios'].includes(platformName),
 
     /**
-     * @static
-     * @readonly
+     * True if running on an iOS device.
+     *
      * @type {boolean}
-     * @name pc.platform.touch
-     * @description If platform supports touch input.
      */
-    touch: false,
+    ios: platformName === 'ios',
 
     /**
-     * @static
-     * @readonly
+     * True if running on an Android device.
+     *
      * @type {boolean}
-     * @name pc.platform.workers
-     * @description If the platform supports Web Workers.
      */
-    workers: false,
+    android: platformName === 'android',
 
     /**
-     * @private
-     * @static
-     * @readonly
+     * True if running on Apple Vision Pro (visionOS).
+     *
      * @type {boolean}
-     * @name pc.platform.passiveEvents
-     * @description If the platform supports an options object as the third parameter
-     * to `EventTarget.addEventListener()` and the passive property is supported.
      */
-    passiveEvents: false
+    visionos: visionos,
+
+    /**
+     * True if running on an Xbox device.
+     *
+     * @type {boolean}
+     */
+    xbox: xbox,
+
+    /**
+     * True if the platform supports gamepads.
+     *
+     * @type {boolean}
+     */
+    gamepads: gamepads,
+
+    /**
+     * True if the platform supports touch input.
+     *
+     * @type {boolean}
+     */
+    touch: touch,
+
+    /**
+     * True if the platform supports Web Workers.
+     *
+     * @type {boolean}
+     */
+    workers: workers,
+
+    /**
+     * True if the platform supports an options object as the third parameter to
+     * `EventTarget.addEventListener()` and the passive property is supported.
+     *
+     * @type {boolean}
+     * @ignore
+     */
+    passiveEvents: passiveEvents,
+
+    /**
+     * Get the browser name.
+     *
+     * @type {'chrome' | 'safari' | 'firefox' | 'other' | null}
+     * @ignore
+     */
+    browserName: browserName
 };
-
-if (typeof navigator !== 'undefined') {
-    var ua = navigator.userAgent;
-
-    if (/(windows|mac os|linux|cros)/i.test(ua))
-        platform.desktop = true;
-
-    if (/xbox/i.test(ua))
-        platform.xbox = true;
-
-    if (/(windows phone|iemobile|wpdesktop)/i.test(ua)) {
-        platform.desktop = false;
-        platform.mobile = true;
-        platform.windows = true;
-    } else if (/android/i.test(ua)) {
-        platform.desktop = false;
-        platform.mobile = true;
-        platform.android = true;
-    } else if (/ip([ao]d|hone)/i.test(ua)) {
-        platform.desktop = false;
-        platform.mobile = true;
-        platform.ios = true;
-    }
-
-    if (typeof window !== 'undefined') {
-        platform.touch = 'ontouchstart' in window || ('maxTouchPoints' in navigator && navigator.maxTouchPoints > 0);
-    }
-
-    platform.gamepads = 'getGamepads' in navigator;
-
-    platform.workers = (typeof(Worker) !== 'undefined');
-
-    try {
-        var opts = Object.defineProperty({}, 'passive', {
-            get: function () {
-                platform.passiveEvents = true;
-                return false;
-            }
-        });
-        window.addEventListener("testpassive", null, opts);
-        window.removeEventListener("testpassive", null, opts);
-    } catch (e) {}
-}
 
 export { platform };

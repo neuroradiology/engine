@@ -1,28 +1,76 @@
 import { EventHandler } from './event-handler.js';
 
 /**
- * @class
- * @name pc.Tags
- * @augments pc.EventHandler
- * @classdesc Set of tag names.
- * @description Create an instance of a Tags.
- * @param {object} [parent] - Parent object who tags belong to.
- * Note: Tags are automatically available on `pc.Entity` and `pc.Asset` as `tags` field.
+ * Tags is a powerful tag management system for categorizing and filtering objects in PlayCanvas
+ * applications. It provides an efficient way to attach string identifiers to objects and query them
+ * using logical operations.
+ *
+ * Tags are automatically available on {@link Asset}s and {@link Entity}s (see {@link Asset#tags}
+ * and {@link GraphNode#tags}). You can search for specific assets via {@link AssetRegistry#findByTag}
+ * and specific entities via {@link GraphNode#findByTag}.
  */
 class Tags extends EventHandler {
+    /**
+     * Fired for each individual tag that is added.
+     *
+     * @event
+     * @example
+     * tags.on('add', (tag, parent) => {
+     *    console.log(`${tag} added to ${parent.name}`);
+     * });
+     */
+    static EVENT_ADD = 'add';
+
+    /**
+     * Fired for each individual tag that is removed.
+     *
+     * @event
+     * @example
+     * tags.on('remove', (tag, parent) => {
+     *   console.log(`${tag} removed from ${parent.name}`);
+     * });
+     */
+    static EVENT_REMOVE = 'remove';
+
+    /**
+     * Fired when tags have been added or removed. It will fire once on bulk changes, while `add`
+     * and `remove` will fire on each tag operation.
+     *
+     * @event
+     * @example
+     * tags.on('change', (parent) => {
+     *    console.log(`Tags changed on ${parent.name}`);
+     * });
+     */
+    static EVENT_CHANGE = 'change';
+
+    /** @private */
+    _index = {};
+
+    /** @private */
+    _list = [];
+
+    /**
+     * @type {object}
+     * @private
+     */
+    _parent;
+
+    /**
+     * Create a new Tags instance.
+     *
+     * @param {object} [parent] - Parent object who tags belong to.
+     */
     constructor(parent) {
         super();
 
-        this._index = { };
-        this._list = [];
         this._parent = parent;
     }
 
     /**
-     * @function
-     * @name pc.Tags#add
-     * @description Add a tag, duplicates are ignored. Can be array or comma separated arguments for multiple tags.
-     * @param {...*} name - Name of a tag, or array of tags.
+     * Add a tag, duplicates are ignored. Can be array or comma separated arguments for multiple tags.
+     *
+     * @param {...*} args - Name of a tag, or array of tags.
      * @returns {boolean} True if any tag were added.
      * @example
      * tags.add('level-1');
@@ -31,16 +79,18 @@ class Tags extends EventHandler {
      * @example
      * tags.add(['level-2', 'mob']);
      */
-    add() {
-        var changed = false;
-        var tags = this._processArguments(arguments, true);
+    add(...args) {
+        let changed = false;
+        const tags = this._processArguments(args, true);
 
-        if (!tags.length)
+        if (!tags.length) {
             return changed;
+        }
 
-        for (var i = 0; i < tags.length; i++) {
-            if (this._index[tags[i]])
+        for (let i = 0; i < tags.length; i++) {
+            if (this._index[tags[i]]) {
                 continue;
+            }
 
             changed = true;
 
@@ -50,17 +100,17 @@ class Tags extends EventHandler {
             this.fire('add', tags[i], this._parent);
         }
 
-        if (changed)
+        if (changed) {
             this.fire('change', this._parent);
+        }
 
         return changed;
     }
 
     /**
-     * @function
-     * @name pc.Tags#remove
-     * @description Remove tag.
-     * @param {...*} name - Name of a tag or array of tags.
+     * Remove tag.
+     *
+     * @param {...*} args - Name of a tag or array of tags.
      * @returns {boolean} True if any tag were removed.
      * @example
      * tags.remove('level-1');
@@ -69,20 +119,23 @@ class Tags extends EventHandler {
      * @example
      * tags.remove(['level-2', 'mob']);
      */
-    remove() {
-        var changed = false;
+    remove(...args) {
+        let changed = false;
 
-        if (!this._list.length)
+        if (!this._list.length) {
             return changed;
+        }
 
-        var tags = this._processArguments(arguments, true);
+        const tags = this._processArguments(args, true);
 
-        if (!tags.length)
+        if (!tags.length) {
             return changed;
+        }
 
-        for (var i = 0; i < tags.length; i++) {
-            if (!this._index[tags[i]])
+        for (let i = 0; i < tags.length; i++) {
+            if (!this._index[tags[i]]) {
                 continue;
+            }
 
             changed = true;
 
@@ -92,41 +145,41 @@ class Tags extends EventHandler {
             this.fire('remove', tags[i], this._parent);
         }
 
-        if (changed)
+        if (changed) {
             this.fire('change', this._parent);
+        }
 
         return changed;
     }
 
     /**
-     * @function
-     * @name pc.Tags#clear
-     * @description Remove all tags.
+     * Remove all tags.
+     *
      * @example
      * tags.clear();
      */
     clear() {
-        if (!this._list.length)
+        if (!this._list.length) {
             return;
+        }
 
-        var tags = this._list.slice(0);
+        const tags = this._list.slice(0);
         this._list = [];
         this._index = { };
 
-        for (var i = 0; i < tags.length; i++)
+        for (let i = 0; i < tags.length; i++) {
             this.fire('remove', tags[i], this._parent);
+        }
 
         this.fire('change', this._parent);
     }
 
     /**
-     * @function
-     * @name pc.Tags#has
-     * @description Check if tags satisfy filters.
-     * Filters can be provided by simple name of tag, as well as by array of tags.
-     * When an array is provided it will check if tags contain each tag within the array.
-     * If any of comma separated argument is satisfied, then it will return true.
-     * Any number of combinations are valid, and order is irrelevant.
+     * Check if tags satisfy filters. Filters can be provided by simple name of tag, as well as by
+     * array of tags. When an array is provided it will check if tags contain each tag within the
+     * array. If any of comma separated argument is satisfied, then it will return true. Any number
+     * of combinations are valid, and order is irrelevant.
+     *
      * @param {...*} query - Name of a tag or array of tags.
      * @returns {boolean} True if filters are satisfied.
      * @example
@@ -138,37 +191,46 @@ class Tags extends EventHandler {
      * @example
      * tags.has(['ui', 'settings'], ['ui', 'levels']); // (ui AND settings) OR (ui AND levels)
      */
-    has() {
-        if (!this._list.length)
+    has(...query) {
+        if (!this._list.length) {
             return false;
+        }
 
-        return this._has(this._processArguments(arguments));
+        return this._has(this._processArguments(query));
     }
 
-
+    /**
+     * @param {string[]|string[][]} tags - Array of tags.
+     * @returns {boolean} True if the supplied tags are present.
+     * @private
+     */
     _has(tags) {
-        if (!this._list.length || !tags.length)
+        if (!this._list.length || !tags.length) {
             return false;
+        }
 
-        for (var i = 0; i < tags.length; i++) {
+        for (let i = 0; i < tags.length; i++) {
             if (tags[i].length === 1) {
-                // single occurance
-                if (this._index[tags[i][0]])
+                // single occurrence
+                if (this._index[tags[i][0]]) {
                     return true;
+                }
             } else {
-                // combined occurance
-                var multiple = true;
+                // combined occurrence
+                let multiple = true;
 
-                for (var t = 0; t < tags[i].length; t++) {
-                    if (this._index[tags[i][t]])
+                for (let t = 0; t < tags[i].length; t++) {
+                    if (this._index[tags[i][t]]) {
                         continue;
+                    }
 
                     multiple = false;
                     break;
                 }
 
-                if (multiple)
+                if (multiple) {
                     return true;
+                }
             }
         }
 
@@ -176,30 +238,38 @@ class Tags extends EventHandler {
     }
 
     /**
-     * @function
-     * @name pc.Tags#list
-     * @description Returns immutable array of tags.
+     * Returns immutable array of tags.
+     *
      * @returns {string[]} Copy of tags array.
      */
     list() {
         return this._list.slice(0);
     }
 
+    /**
+     * @param {Array} args - Arguments to process.
+     * @param {boolean} [flat] - If true, will flatten array of tags. Defaults to false.
+     * @returns {string[]|string[][]} Array of tags.
+     * @private
+     */
     _processArguments(args, flat) {
-        var tags = [];
-        var tmp = [];
+        const tags = [];
+        let tmp = [];
 
-        if (!args || !args.length)
+        if (!args || !args.length) {
             return tags;
+        }
 
-        for (var i = 0; i < args.length; i++) {
+        for (let i = 0; i < args.length; i++) {
             if (args[i] instanceof Array) {
-                if (!flat)
+                if (!flat) {
                     tmp = [];
+                }
 
-                for (var t = 0; t < args[i].length; t++) {
-                    if (typeof args[i][t] !== 'string')
+                for (let t = 0; t < args[i].length; t++) {
+                    if (typeof args[i][t] !== 'string') {
                         continue;
+                    }
 
                     if (flat) {
                         tags.push(args[i][t]);
@@ -208,8 +278,9 @@ class Tags extends EventHandler {
                     }
                 }
 
-                if (!flat && tmp.length)
+                if (!flat && tmp.length) {
                     tags.push(tmp);
+                }
             } else if (typeof args[i] === 'string') {
                 if (flat) {
                     tags.push(args[i]);
@@ -223,37 +294,13 @@ class Tags extends EventHandler {
     }
 
     /**
-     * @field
-     * @readonly
-     * @name pc.Tags#size
+     * Number of tags in set.
+     *
      * @type {number}
-     * @description Number of tags in set.
      */
     get size() {
         return this._list.length;
     }
 }
-
-/**
- * @event
- * @name pc.Tags#add
- * @param {string} tag - Name of a tag added to a set.
- * @param {object} parent - Parent object who tags belong to.
- */
-
-/**
- * @event
- * @name pc.Tags#remove
- * @param {string} tag - Name of a tag removed from a set.
- * @param {object} parent - Parent object who tags belong to.
- */
-
-/**
- * @event
- * @name pc.Tags#change
- * @param {object} [parent] - Parent object who tags belong to.
- * @description Fires when tags been added / removed.
- * It will fire once on bulk changes, while `add`/`remove` will fire on each tag operation.
- */
 
 export { Tags };

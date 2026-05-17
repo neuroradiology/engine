@@ -1,15 +1,17 @@
 import { EventHandler } from '../../../core/event-handler.js';
+import { Debug } from '../../../core/debug.js';
+import { math } from '../../../core/math/math.js';
+import { Vec3 } from '../../../core/math/vec3.js';
+import { Asset } from '../../asset/asset.js';
+import { SoundInstance } from '../../../platform/sound/instance.js';
+import { SoundInstance3d } from '../../../platform/sound/instance3d.js';
 
-import { math } from '../../../math/math.js';
-import { Vec3 } from '../../../math/vec3.js';
-
-import { Asset } from '../../../asset/asset.js';
-
-import { SoundInstance } from '../../../sound/instance.js';
-import { SoundInstance3d } from '../../../sound/instance3d.js';
+/**
+ * @import { SoundComponent } from './component.js'
+ */
 
 // temporary object for creating instances
-var instanceOptions = {
+const instanceOptions = {
     volume: 0,
     pitch: 0,
     loop: false,
@@ -28,48 +30,130 @@ var instanceOptions = {
 };
 
 /**
- * @class
- * @name pc.SoundSlot
- * @augments pc.EventHandler
- * @classdesc The SoundSlot controls playback of an audio asset.
- * @description Create a new SoundSlot.
- * @param {pc.SoundComponent} component - The Component that created this slot.
- * @param {string} name - The name of the slot.
- * @param {object} options - Settings for the slot.
- * @param {number} [options.volume=1] - The playback volume, between 0 and 1.
- * @param {number} [options.pitch=1] - The relative pitch, default of 1, plays at normal pitch.
- * @param {boolean} [options.loop=false] - If true the sound will restart when it reaches the end.
- * @param {number} [options.startTime=0] - The start time from which the sound will start playing.
- * @param {number} [options.duration=null] - The duration of the sound that the slot will play starting from startTime.
- * @param {boolean} [options.overlap=false] - If true then sounds played from slot will be played independently of each other. Otherwise the slot will first stop the current sound before starting the new one.
- * @param {boolean} [options.autoPlay=false] - If true the slot will start playing as soon as its audio asset is loaded.
- * @param {number} [options.asset=null] - The asset id of the audio asset that is going to be played by this slot.
- * @property {string} name The name of the slot.
- * @property {number|null} asset The asset id.
- * @property {boolean} autoPlay If true the slot will begin playing as soon as it is loaded.
- * @property {number} volume The volume modifier to play the sound with. In range 0-1.
- * @property {number} pitch The pitch modifier to play the sound with. Must be larger than 0.01.
- * @property {number} startTime The start time from which the sound will start playing.
- * @property {number} duration The duration of the sound that the slot will play starting from startTime.
- * @property {boolean} loop If true the slot will restart when it finishes playing.
- * @property {boolean} overlap If true then sounds played from slot will be played independently of each other. Otherwise the slot will first stop the current sound before starting the new one.
- * @property {boolean} isLoaded Returns true if the asset of the slot is loaded.
- * @property {boolean} isPlaying Returns true if the slot is currently playing.
- * @property {boolean} isPaused Returns true if the slot is currently paused.
- * @property {boolean} isStopped Returns true if the slot is currently stopped.
- * @property {pc.SoundInstance[]} instances An array that contains all the {@link pc.SoundInstance}s currently being played by the slot.
+ * The SoundSlot controls the playback of {@link SoundInstance}s. SoundSlots are managed by
+ * {@link SoundComponent}s. To add and remove SoundSlots on a SoundComponent, use
+ * {@link SoundComponent#addSlot} and {@link SoundComponent#removeSlot} respectively.
+ *
+ * @hideconstructor
+ * @category Sound
  */
 class SoundSlot extends EventHandler {
-    constructor(component, name, options) {
+    /**
+     * Fired when a {@link SoundInstance} starts playing on a slot. The handler is passed the sound
+     * instance that started playing.
+     *
+     * @event
+     * @example
+     * slot.on('play', (instance) => {
+     *     console.log('Sound instance started playing');
+     * });
+     */
+    static EVENT_PLAY = 'play';
+
+    /**
+     * Fired when a {@link SoundInstance} is paused on a slot. The handler is passed the sound
+     * instance that is paused.
+     *
+     * @event
+     * @example
+     * slot.on('pause', (instance) => {
+     *     console.log('Sound instance paused');
+     * });
+     */
+    static EVENT_PAUSE = 'pause';
+
+    /**
+     * Fired when a {@link SoundInstance} is resumed on a slot. The handler is passed the sound
+     * instance that is resumed.
+     *
+     * @event
+     * @example
+     * slot.on('resume', (instance) => {
+     *     console.log('Sound instance resumed');
+     * });
+     */
+    static EVENT_RESUME = 'resume';
+
+    /**
+     * Fired when a {@link SoundInstance} is stopped on a slot. The handler is passed the sound
+     * instance that is stopped.
+     *
+     * @event
+     * @example
+     * slot.on('stop', (instance) => {
+     *     console.log('Sound instance stopped');
+     * });
+     */
+    static EVENT_STOP = 'stop';
+
+    /**
+     * Fired when a sound instance stops playing because it reached its end. The handler is passed
+     * the {@link SoundInstance} that ended.
+     *
+     * @event
+     * @example
+     * slot.on('end', (instance) => {
+     *     console.log('Sound instance playback ended');
+     * });
+     */
+    static EVENT_END = 'end';
+
+    /**
+     * Fired when the sound {@link Asset} assigned to the slot is loaded. The handler is passed the
+     * loaded {@link Sound} resource.
+     *
+     * @event
+     * @example
+     * slot.on('load', (sound) => {
+     *     console.log('Sound resource loaded');
+     * });
+     */
+    static EVENT_LOAD = 'load';
+
+    /**
+     * The name of the slot.
+     *
+     * @type {string}
+     */
+    name;
+
+    /**
+     * An array that contains all the {@link SoundInstance}s currently being played by the slot.
+     *
+     * @type {SoundInstance[]}
+     */
+    instances = [];
+
+    /**
+     * Create a new SoundSlot.
+     *
+     * @param {SoundComponent} component - The Component that created this slot.
+     * @param {string} [name] - The name of the slot. Defaults to 'Untitled'.
+     * @param {object} [options] - Settings for the slot.
+     * @param {number} [options.volume] - The playback volume, between 0 and 1.
+     * @param {number} [options.pitch] - The relative pitch, default of 1, plays at normal pitch.
+     * @param {boolean} [options.loop] - If true, the sound will restart when it reaches the end.
+     * @param {number} [options.startTime] - The start time from which the sound will start
+     * playing.
+     * @param {number} [options.duration] - The duration of the sound that the slot will play
+     * starting from startTime.
+     * @param {boolean} [options.overlap] - If true, then sounds played from slot will be played
+     * independently of each other. Otherwise the slot will first stop the current sound before
+     * starting the new one.
+     * @param {boolean} [options.autoPlay] - If true, the slot will start playing as soon as its
+     * audio asset is loaded.
+     * @param {number} [options.asset] - The asset id of the audio asset that is going to be played
+     * by this slot.
+     */
+    constructor(component, name = 'Untitled', options = {}) {
         super();
 
         this._component = component;
         this._assets = component.system.app.assets;
         this._manager = component.system.manager;
 
-        this.name = name || 'Untitled';
+        this.name = name;
 
-        options = options || {};
         this._volume = options.volume !== undefined ? math.clamp(Number(options.volume) || 0, 0, 1) : 1;
         this._pitch = options.pitch !== undefined ? Math.max(0.01, Number(options.pitch) || 0) : 1;
         this._loop = !!(options.loop !== undefined ? options.loop : false);
@@ -90,16 +174,14 @@ class SoundSlot extends EventHandler {
         this._onInstanceResumeHandler = this._onInstanceResume.bind(this);
         this._onInstanceStopHandler = this._onInstanceStop.bind(this);
         this._onInstanceEndHandler = this._onInstanceEnd.bind(this);
-
-        this.instances = [];
     }
 
     /**
-     * @function pc.SoundSlot#play
-     * @description Plays a sound. If {@link pc.SoundSlot#overlap} is true the new sound
-     * instance will be played independently of any other instances already playing.
-     * Otherwise existing sound instances will stop before playing the new sound.
-     * @returns {pc.SoundInstance} The new sound instance.
+     * Plays a sound. If {@link overlap} is true the new sound instance will be played
+     * independently of any other instances already playing. Otherwise existing sound instances
+     * will stop before playing the new sound.
+     *
+     * @returns {SoundInstance} The new sound instance.
      */
     play() {
         // stop if overlap is false
@@ -109,20 +191,18 @@ class SoundSlot extends EventHandler {
 
         // If not loaded and doesn't have asset - then we cannot play it.  Warn and exit.
         if (!this.isLoaded && !this._hasAsset()) {
-            // #ifdef DEBUG
-            console.warn("Trying to play SoundSlot " + this.name + " but it is not loaded and doesn't have an asset.");
-            // #endif
-            return;
+            Debug.warn(`Trying to play SoundSlot ${this.name} but it is not loaded and doesn't have an asset.`);
+            return undefined;
         }
 
-        var instance = this._createInstance();
+        const instance = this._createInstance();
         this.instances.push(instance);
 
         // if not loaded then load first
         // and then set sound resource on the created instance
         if (!this.isLoaded) {
-            var onLoad = function (sound) {
-                var playWhenLoaded = instance._playWhenLoaded;
+            const onLoad = function (sound) {
+                const playWhenLoaded = instance._playWhenLoaded;
                 instance.sound = sound;
                 if (playWhenLoaded) {
                     instance.play();
@@ -140,16 +220,15 @@ class SoundSlot extends EventHandler {
     }
 
     /**
-     * @function
-     * @name pc.SoundSlot#pause
-     * @description Pauses all sound instances. To continue playback call {@link pc.SoundSlot#resume}.
+     * Pauses all sound instances. To continue playback call {@link resume}.
+     *
      * @returns {boolean} True if the sound instances paused successfully, false otherwise.
      */
     pause() {
-        var paused = false;
+        let paused = false;
 
-        var instances = this.instances;
-        for (var i = 0, len = instances.length; i < len; i++) {
+        const instances = this.instances;
+        for (let i = 0, len = instances.length; i < len; i++) {
             if (instances[i].pause()) {
                 paused = true;
             }
@@ -159,32 +238,33 @@ class SoundSlot extends EventHandler {
     }
 
     /**
-     * @function
-     * @name pc.SoundSlot#resume
-     * @description Resumes playback of all paused sound instances.
+     * Resumes playback of all paused sound instances.
+     *
      * @returns {boolean} True if any instances were resumed.
      */
     resume() {
-        var resumed = false;
-        var instances = this.instances;
-        for (var i = 0, len = instances.length; i < len; i++) {
-            if (instances[i].resume())
+        let resumed = false;
+
+        const instances = this.instances;
+        for (let i = 0, len = instances.length; i < len; i++) {
+            if (instances[i].resume()) {
                 resumed = true;
+            }
         }
 
         return resumed;
     }
 
     /**
-     * @function
-     * @name pc.SoundSlot#stop
-     * @description Stops playback of all sound instances.
+     * Stops playback of all sound instances.
+     *
      * @returns {boolean} True if any instances were stopped.
      */
     stop() {
-        var stopped = false;
-        var instances = this.instances;
-        var i = instances.length;
+        let stopped = false;
+
+        const instances = this.instances;
+        let i = instances.length;
         // do this in reverse order because as each instance
         // is stopped it will be removed from the instances array
         // by the instance stop event handler
@@ -199,18 +279,17 @@ class SoundSlot extends EventHandler {
     }
 
     /**
-     * @function
-     * @name pc.SoundSlot#load
-     * @description Loads the asset assigned to this slot.
+     * Loads the asset assigned to this slot.
      */
     load() {
-        if (!this._hasAsset())
+        if (!this._hasAsset()) {
             return;
+        }
 
-        var asset = this._assets.get(this._asset);
+        const asset = this._assets.get(this._asset);
         if (!asset) {
-            this._assets.off('add:' + this._asset, this._onAssetAdd, this);
-            this._assets.once('add:' + this._asset, this._onAssetAdd, this);
+            this._assets.off(`add:${this._asset}`, this._onAssetAdd, this);
+            this._assets.once(`add:${this._asset}`, this._onAssetAdd, this);
             return;
         }
 
@@ -230,20 +309,22 @@ class SoundSlot extends EventHandler {
     }
 
     /**
-     * @function
-     * @name pc.SoundSlot#setExternalNodes
-     * @description Connect external Web Audio API nodes. Any sound played by this slot will
-     * automatically attach the specified nodes to the source that plays the sound. You need to pass
-     * the first node of the node graph that you created externally and the last node of that graph. The first
-     * node will be connected to the audio source and the last node will be connected to the destination of the AudioContext (e.g. speakers).
-     * @param {AudioNode} firstNode - The first node that will be connected to the audio source of sound instances.
-     * @param {AudioNode} [lastNode] - The last node that will be connected to the destination of the AudioContext.
-     * If unspecified then the firstNode will be connected to the destination instead.
+     * Connect external Web Audio API nodes. Any sound played by this slot will automatically
+     * attach the specified nodes to the source that plays the sound. You need to pass the first
+     * node of the node graph that you created externally and the last node of that graph. The
+     * first node will be connected to the audio source and the last node will be connected to the
+     * destination of the AudioContext (e.g. speakers).
+     *
+     * @param {AudioNode} firstNode - The first node that will be connected to the audio source of
+     * sound instances.
+     * @param {AudioNode} [lastNode] - The last node that will be connected to the destination of
+     * the AudioContext. If unspecified then the firstNode will be connected to the destination
+     * instead.
      * @example
-     * var context = app.systems.sound.context;
-     * var analyzer = context.createAnalyzer();
-     * var distortion = context.createWaveShaper();
-     * var filter = context.createBiquadFilter();
+     * const context = app.systems.sound.context;
+     * const analyzer = context.createAnalyzer();
+     * const distortion = context.createWaveShaper();
+     * const filter = context.createBiquadFilter();
      * analyzer.connect(distortion);
      * distortion.connect(filter);
      * slot.setExternalNodes(analyzer, filter);
@@ -263,17 +344,15 @@ class SoundSlot extends EventHandler {
 
         // update instances if not overlapping
         if (!this._overlap) {
-            var instances = this.instances;
-            for (var i = 0, len = instances.length; i < len; i++) {
+            const instances = this.instances;
+            for (let i = 0, len = instances.length; i < len; i++) {
                 instances[i].setExternalNodes(firstNode, lastNode);
             }
         }
     }
 
     /**
-     * @function
-     * @name pc.SoundSlot#clearExternalNodes
-     * @description Clears any external nodes set by {@link pc.SoundSlot#setExternalNodes}.
+     * Clears any external nodes set by {@link setExternalNodes}.
      */
     clearExternalNodes() {
         this._firstNode = null;
@@ -281,28 +360,28 @@ class SoundSlot extends EventHandler {
 
         // update instances if not overlapping
         if (!this._overlap) {
-            var instances = this.instances;
-            for (var i = 0, len = instances.length; i < len; i++) {
+            const instances = this.instances;
+            for (let i = 0, len = instances.length; i < len; i++) {
                 instances[i].clearExternalNodes();
             }
         }
     }
 
     /**
-     * @function
-     * @name pc.SoundSlot#getExternalNodes
-     * @description Gets an array that contains the two external nodes set by {@link pc.SoundSlot#setExternalNodes}.
-     * @returns {AudioNode[]} An array of 2 elements that contains the first and last nodes set by {@link pc.SoundSlot#setExternalNodes}.
+     * Gets an array that contains the two external nodes set by {@link setExternalNodes}.
+     *
+     * @returns {AudioNode[]} An array of 2 elements that contains the first and last nodes set by
+     * {@link setExternalNodes}.
      */
     getExternalNodes() {
         return [this._firstNode, this._lastNode];
     }
 
     /**
-     * @function
-     * @private
-     * @name pc.SoundSlot#_hasAsset
+     * Reports whether an asset is set on this slot.
+     *
      * @returns {boolean} Returns true if the slot has an asset assigned.
+     * @private
      */
     _hasAsset() {
         // != intentional
@@ -310,29 +389,28 @@ class SoundSlot extends EventHandler {
     }
 
     /**
-     * @function
+     * Creates a new {@link SoundInstance} with the properties of the slot.
+     *
+     * @returns {SoundInstance} The new instance.
      * @private
-     * @name pc.SoundSlot#_createInstance
-     * @description Creates a new pc.SoundInstance with the properties of the slot.
-     * @returns {pc.SoundInstance} The new instance.
      */
     _createInstance() {
-        var instance = null;
+        let instance = null;
 
-        var component = this._component;
+        const component = this._component;
 
-        var sound = null;
+        let sound = null;
 
         // get sound resource
         if (this._hasAsset()) {
-            var asset = this._assets.get(this._asset);
+            const asset = this._assets.get(this._asset);
             if (asset) {
                 sound = asset.resource;
             }
         }
 
         // initialize instance options
-        var data = instanceOptions;
+        const data = instanceOptions;
         data.volume = this._volume * component.volume;
         data.pitch = this._pitch * component.pitch;
         data.loop = this._loop;
@@ -391,7 +469,7 @@ class SoundSlot extends EventHandler {
 
     _onInstanceStop(instance) {
         // remove instance that stopped
-        var idx = this.instances.indexOf(instance);
+        const idx = this.instances.indexOf(instance);
         if (idx !== -1) {
             this.instances.splice(idx, 1);
         }
@@ -405,7 +483,7 @@ class SoundSlot extends EventHandler {
 
     _onInstanceEnd(instance) {
         // remove instance that ended
-        var idx = this.instances.indexOf(instance);
+        const idx = this.instances.indexOf(instance);
         if (idx !== -1) {
             this.instances.splice(idx, 1);
         }
@@ -427,131 +505,28 @@ class SoundSlot extends EventHandler {
 
     _onAssetRemoved(asset) {
         asset.off('remove', this._onAssetRemoved, this);
-        this._assets.off('add:' + asset.id, this._onAssetAdd, this);
+        this._assets.off(`add:${asset.id}`, this._onAssetAdd, this);
         this.stop();
     }
 
     updatePosition(position) {
-        var instances = this.instances;
-        for (var i = 0, len = instances.length; i < len; i++) {
+        const instances = this.instances;
+        for (let i = 0, len = instances.length; i < len; i++) {
             instances[i].position = position;
         }
     }
 
-    get volume() {
-        return this._volume;
-    }
-
-    set volume(value) {
-        this._volume = math.clamp(Number(value) || 0, 0, 1);
-
-        // update instances if non overlapping
-        if (!this._overlap) {
-            var instances = this.instances;
-            for (var i = 0, len = instances.length; i < len; i++) {
-                instances[i].volume = this._volume * this._component.volume;
-            }
-        }
-    }
-
-    get pitch() {
-        return this._pitch;
-    }
-
-    set pitch(value) {
-        this._pitch = Math.max(Number(value) || 0, 0.01);
-
-        // update instances if non overlapping
-        if (!this._overlap) {
-            var instances = this.instances;
-            for (var i = 0, len = instances.length; i < len; i++) {
-                instances[i].pitch = this.pitch * this._component.pitch;
-            }
-        }
-    }
-
-    get loop() {
-        return this._loop;
-    }
-
-    set loop(value) {
-        this._loop = !!value;
-
-        // update instances if non overlapping
-        var instances = this.instances;
-        for (var i = 0, len = instances.length; i < len; i++) {
-            instances[i].loop = this._loop;
-        }
-    }
-
-    get autoPlay() {
-        return this._autoPlay;
-    }
-
-    set autoPlay(value) {
-        this._autoPlay = !!value;
-    }
-
-    get overlap() {
-        return this._overlap;
-    }
-
-    set overlap(value) {
-        this._overlap = !!value;
-    }
-
-    get startTime() {
-        return this._startTime;
-    }
-
-    set startTime(value) {
-        this._startTime = Math.max(0, Number(value) || 0);
-
-        // update instances if non overlapping
-        if (!this._overlap) {
-            var instances = this.instances;
-            for (var i = 0, len = instances.length; i < len; i++) {
-                instances[i].startTime = this._startTime;
-            }
-        }
-    }
-
-    get duration() {
-        var assetDuration = 0;
-        if (this._hasAsset()) {
-            var asset = this._assets.get(this._asset);
-            assetDuration = asset.resource ? asset.resource.duration : 0;
-        }
-
-        // != intentional
-        if (this._duration != null) {
-            return this._duration % (assetDuration || 1);
-        }
-        return assetDuration;
-    }
-
-    set duration(value) {
-        this._duration = Math.max(0, Number(value) || 0) || null;
-
-        // update instances if non overlapping
-        if (!this._overlap) {
-            var instances = this.instances;
-            for (var i = 0, len = instances.length; i < len; i++) {
-                instances[i].duration = this._duration;
-            }
-        }
-    }
-
-    get asset() {
-        return this._asset;
-    }
-
+    /**
+     * Sets the asset id.
+     *
+     * @type {number|null}
+     */
     set asset(value) {
-        var old = this._asset;
+        const old = this._asset;
 
         if (old) {
-            this._assets.off('add:' + old, this._onAssetAdd, this);
-            var oldAsset = this._assets.get(old);
+            this._assets.off(`add:${old}`, this._onAssetAdd, this);
+            const oldAsset = this._assets.get(old);
             if (oldAsset) {
                 oldAsset.off('remove', this._onAssetRemoved, this);
             }
@@ -568,9 +543,77 @@ class SoundSlot extends EventHandler {
         }
     }
 
+    /**
+     * Gets the asset id.
+     *
+     * @type {number|null}
+     */
+    get asset() {
+        return this._asset;
+    }
+
+    /**
+     * Sets whether the slot will begin playing as soon as it is loaded.
+     *
+     * @type {boolean}
+     */
+    set autoPlay(value) {
+        this._autoPlay = !!value;
+    }
+
+    /**
+     * Gets whether the slot will begin playing as soon as it is loaded.
+     *
+     * @type {boolean}
+     */
+    get autoPlay() {
+        return this._autoPlay;
+    }
+
+    /**
+     * Sets the duration of the sound that the slot will play starting from startTime.
+     *
+     * @type {number}
+     */
+    set duration(value) {
+        this._duration = Math.max(0, Number(value) || 0) || null;
+
+        // update instances if non overlapping
+        if (!this._overlap) {
+            const instances = this.instances;
+            for (let i = 0, len = instances.length; i < len; i++) {
+                instances[i].duration = this._duration;
+            }
+        }
+    }
+
+    /**
+     * Gets the duration of the sound that the slot will play starting from startTime.
+     *
+     * @type {number}
+     */
+    get duration() {
+        let assetDuration = 0;
+        if (this._hasAsset()) {
+            const asset = this._assets.get(this._asset);
+            assetDuration = asset?.resource ? asset.resource.duration : 0;
+        }
+
+        // != intentional
+        if (this._duration != null) {
+            return this._duration % (assetDuration || 1);
+        }
+        return assetDuration;
+    }
+
+    /**
+     * Gets whether the asset of the slot is loaded.
+     *
+     * @type {boolean}
+     */
     get isLoaded() {
         if (this._hasAsset()) {
-            var asset = this._assets.get(this._asset);
+            const asset = this._assets.get(this._asset);
             if (asset) {
                 return !!asset.resource;
             }
@@ -579,76 +622,179 @@ class SoundSlot extends EventHandler {
         return false;
     }
 
+    /**
+     * Gets whether the slot is currently paused.
+     *
+     * @type {boolean}
+     */
+    get isPaused() {
+        const instances = this.instances;
+        const len = instances.length;
+        if (len === 0) {
+            return false;
+        }
+
+        for (let i = 0; i < len; i++) {
+            if (!instances[i].isPaused) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Gets whether the slot is currently playing.
+     *
+     * @type {boolean}
+     */
     get isPlaying() {
-        var instances = this.instances;
-        for (var i = 0, len = instances.length; i < len; i++) {
-            if (instances[i].isPlaying)
+        const instances = this.instances;
+        for (let i = 0, len = instances.length; i < len; i++) {
+            if (instances[i].isPlaying) {
                 return true;
+            }
         }
 
         return false;
     }
 
-    get isPaused() {
-        var instances = this.instances;
-        var len = instances.length;
-        if (len === 0)
-            return false;
-
-        for (var i = 0; i < len; i++) {
-            if (!instances[i].isPaused)
-                return false;
-        }
-
-        return true;
-    }
-
+    /**
+     * Gets whether the slot is currently stopped.
+     *
+     * @type {boolean}
+     */
     get isStopped() {
-        var instances = this.instances;
-        for (var i = 0, len = instances.length; i < len; i++) {
-            if (!instances[i].isStopped)
+        const instances = this.instances;
+        for (let i = 0, len = instances.length; i < len; i++) {
+            if (!instances[i].isStopped) {
                 return false;
+            }
         }
 
         return true;
     }
 
-    // Events Documentation
+    /**
+     * Sets whether the slot will restart when it finishes playing.
+     *
+     * @type {boolean}
+     */
+    set loop(value) {
+        this._loop = !!value;
+
+        // update instances if non overlapping
+        const instances = this.instances;
+        for (let i = 0, len = instances.length; i < len; i++) {
+            instances[i].loop = this._loop;
+        }
+    }
 
     /**
-     * @event
-     * @name pc.SoundSlot#play
-     * @description Fired when a sound instance starts playing.
-     * @param {pc.SoundInstance} instance - The instance that started playing.
+     * Gets whether the slot will restart when it finishes playing.
+     *
+     * @type {boolean}
      */
+    get loop() {
+        return this._loop;
+    }
 
     /**
-     * @event
-     * @name pc.SoundSlot#pause
-     * @description Fired when a sound instance is paused.
-     * @param {pc.SoundInstance} instance - The instance that was paused created to play the sound.
+     * Sets whether the sounds played from this slot will be played independently of each other.
+     * Otherwise, the slot will first stop the current sound before starting the new one.
+     *
+     * @type {boolean}
      */
+    set overlap(value) {
+        this._overlap = !!value;
+    }
 
     /**
-     * @event
-     * @name pc.SoundSlot#resume
-     * @description Fired when a sound instance is resumed..
-     * @param {pc.SoundInstance} instance - The instance that was resumed.
+     * Gets whether the sounds played from this slot will be played independently of each other.
+     *
+     * @type {boolean}
      */
+    get overlap() {
+        return this._overlap;
+    }
 
     /**
-     * @event
-     * @name pc.SoundSlot#stop
-     * @description Fired when a sound instance is stopped.
-     * @param {pc.SoundInstance} instance - The instance that was stopped.
+     * Sets the pitch modifier to play the sound with. Must be larger than 0.01.
+     *
+     * @type {number}
      */
+    set pitch(value) {
+        this._pitch = Math.max(Number(value) || 0, 0.01);
+
+        // update instances if non overlapping
+        if (!this._overlap) {
+            const instances = this.instances;
+            for (let i = 0, len = instances.length; i < len; i++) {
+                instances[i].pitch = this.pitch * this._component.pitch;
+            }
+        }
+    }
 
     /**
-     * @event
-     * @name pc.SoundSlot#load
-     * @description Fired when the asset assigned to the slot is loaded.
-     * @param {pc.Sound} sound - The sound resource that was loaded.
+     * Gets the pitch modifier to play the sound with.
+     *
+     * @type {number}
      */
+    get pitch() {
+        return this._pitch;
+    }
+
+    /**
+     * Sets the start time from which the sound will start playing.
+     *
+     * @type {number}
+     */
+    set startTime(value) {
+        this._startTime = Math.max(0, Number(value) || 0);
+
+        // update instances if non overlapping
+        if (!this._overlap) {
+            const instances = this.instances;
+            for (let i = 0, len = instances.length; i < len; i++) {
+                instances[i].startTime = this._startTime;
+            }
+        }
+    }
+
+    /**
+     * Gets the start time from which the sound will start playing.
+     *
+     * @type {number}
+     */
+    get startTime() {
+        return this._startTime;
+    }
+
+    /**
+     * Sets the volume modifier to play the sound with. In range 0-1.
+     *
+     * @type {number}
+     */
+    set volume(value) {
+        this._volume = math.clamp(Number(value) || 0, 0, 1);
+
+        // update instances if non overlapping
+        if (!this._overlap) {
+            const instances = this.instances;
+            for (let i = 0, len = instances.length; i < len; i++) {
+                instances[i].volume = this._volume * this._component.volume;
+            }
+        }
+    }
+
+    /**
+     * Gets the volume modifier to play the sound with.
+     *
+     * @type {number}
+     */
+    get volume() {
+        return this._volume;
+    }
 }
 
 export { SoundSlot };

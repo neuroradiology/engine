@@ -1,19 +1,46 @@
 import { EventHandler } from '../../core/event-handler.js';
 
 /**
- * @class
- * @name pc.Component
- * @augments pc.EventHandler
- * @classdesc Components are used to attach functionality on a {@link pc.Entity}. Components
- * can receive update events each frame, and expose properties to the PlayCanvas Editor.
- * @description Base constructor for a Component.
- * @param {pc.ComponentSystem} system - The ComponentSystem used to create this Component.
- * @param {pc.Entity} entity - The Entity that this Component is attached to.
- * @property {pc.ComponentSystem} system The ComponentSystem used to create this Component.
- * @property {pc.Entity} entity The Entity that this Component is attached to.
- * @property {boolean} enabled Enables or disables the component.
+ * @import { ComponentSystem } from './system.js'
+ * @import { Entity } from '../entity.js'
+ */
+
+/**
+ * Components are used to attach functionality on a {@link Entity}. Components can receive update
+ * events each frame, and expose properties to the PlayCanvas Editor.
+ *
+ * @hideconstructor
  */
 class Component extends EventHandler {
+    /**
+     * Component order. When an entity with multiple components gets enabled, this order specifies
+     * in which order the components get enabled. The lowest number gets enabled first.
+     *
+     * @type {number} - Component order number.
+     * @private
+     */
+    static order = 0;
+
+    /**
+     * The ComponentSystem used to create this Component.
+     *
+     * @type {ComponentSystem}
+     */
+    system;
+
+    /**
+     * The Entity that this Component is attached to.
+     *
+     * @type {Entity}
+     */
+    entity;
+
+    /**
+     * Base constructor for a Component.
+     *
+     * @param {ComponentSystem} system - The ComponentSystem used to create this component.
+     * @param {Entity} entity - The Entity that this Component is attached to.
+     */
     constructor(system, entity) {
         super();
 
@@ -24,27 +51,28 @@ class Component extends EventHandler {
             this.buildAccessors(this.system.schema);
         }
 
-        this.on("set", function (name, oldValue, newValue) {
-            this.fire("set_" + name, name, oldValue, newValue);
+        this.on('set', function (name, oldValue, newValue) {
+            this.fire(`set_${name}`, name, oldValue, newValue);
         });
 
         this.on('set_enabled', this.onSetEnabled, this);
     }
 
+    /** @ignore */
     static _buildAccessors(obj, schema) {
         // Create getter/setter pairs for each property defined in the schema
-        schema.forEach(function (descriptor) {
+        schema.forEach((descriptor) => {
             // If the property descriptor is an object, it should have a `name`
             // member. If not, it should just be the plain property name.
-            var name = (typeof descriptor === 'object') ? descriptor.name : descriptor;
+            const name = (typeof descriptor === 'object') ? descriptor.name : descriptor;
 
             Object.defineProperty(obj, name, {
                 get: function () {
                     return this.data[name];
                 },
                 set: function (value) {
-                    var data = this.data;
-                    var oldValue = data[name];
+                    const data = this.data;
+                    const oldValue = data[name];
                     data[name] = value;
                     this.fire('set', name, oldValue, value);
                 },
@@ -55,10 +83,12 @@ class Component extends EventHandler {
         obj._accessorsBuilt = true;
     }
 
+    /** @ignore */
     buildAccessors(schema) {
         Component._buildAccessors(this, schema);
     }
 
+    /** @ignore */
     onSetEnabled(name, oldValue, newValue) {
         if (oldValue !== newValue) {
             if (this.entity.enabled) {
@@ -71,26 +101,45 @@ class Component extends EventHandler {
         }
     }
 
+    /** @ignore */
     onEnable() {
     }
 
+    /** @ignore */
     onDisable() {
     }
 
+    /** @ignore */
     onPostStateChange() {
     }
 
     /**
-     * @private
-     * @name pc.Component#data
-     * @type {pc.ComponentData}
-     * @description {pc.ComponentData} data Access the {@link pc.ComponentData} directly.
-     * Usually you should access the data properties via the individual properties as
-     * modifying this data directly will not fire 'set' events.
+     * Access the component data directly. Usually you should access the data properties via the
+     * individual properties as modifying this data directly will not fire 'set' events.
+     *
+     * @type {*}
+     * @ignore
      */
     get data() {
-        var record = this.system.store[this.entity.getGuid()];
+        const record = this.system.store[this.entity.getGuid()];
         return record ? record.data : null;
+    }
+
+    /**
+     * Sets the enabled state of the component.
+     *
+     * @type {boolean}
+     */
+    set enabled(arg) {
+    }
+
+    /**
+     * Gets the enabled state of the component.
+     *
+     * @type {boolean}
+     */
+    get enabled() {
+        return true;
     }
 }
 
